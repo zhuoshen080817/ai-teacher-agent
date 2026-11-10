@@ -1,0 +1,3 @@
+- insert:
+    - id: lecture-agent
+      name: dsh-lecture-agent

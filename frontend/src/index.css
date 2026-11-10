@@ -1,0 +1,186 @@
+@import 'tailwindcss';
+
+/* ---------- 动态板书画布 ---------- */
+
+@keyframes canvas-glow {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px rgba(56, 189, 248, 0.18),
+      0 26px 70px -28px rgba(56, 189, 248, 0.4);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(56, 189, 248, 0.3),
+      0 30px 80px -24px rgba(56, 189, 248, 0.55);
+  }
+}
+
+@keyframes caption-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.lecture-board {
+  background: #071120;
+}
+
+.lecture-board--active {
+  animation: canvas-glow 3.2s ease-in-out infinite;
+}
+
+.lecture-canvas {
+  background:
+    radial-gradient(circle at 50% -10%, rgba(56, 189, 248, 0.16), transparent 55%),
+    radial-gradient(circle at 90% 110%, rgba(79, 70, 229, 0.12), transparent 55%),
+    #040a14;
+}
+
+.lecture-canvas__number {
+  position: absolute;
+  top: 12px;
+  right: 20px;
+  font-size: 96px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  color: rgba(148, 163, 184, 0.08);
+  pointer-events: none;
+  user-select: none;
+}
+
+.caption-fade {
+  animation: caption-in 0.35s ease-out;
+}
+
+.board-grid {
+  background-image:
+    linear-gradient(rgba(56, 189, 248, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.05) 1px, transparent 1px);
+  background-size: 26px 26px;
+}
+
+.board-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.board-code {
+  margin: 0;
+  font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, ui-monospace,
+    monospace;
+  font-size: 14px;
+  line-height: 1.8;
+  color: #cbd5e1;
+  white-space: pre;
+  tab-size: 4;
+}
+
+.board-line-highlight {
+  background: rgba(56, 189, 248, 0.14);
+  box-shadow: inset 3px 0 0 #38bdf8;
+}
+
+.tok-comment {
+  color: #64748b;
+  font-style: italic;
+}
+
+.tok-string {
+  color: #86efac;
+}
+
+.tok-keyword {
+  color: #7dd3fc;
+}
+
+.tok-number {
+  color: #fbbf24;
+}
+
+.tok-arrow {
+  color: #38bdf8;
+}
+
+/* ---------- Markdown / LaTeX ---------- */
+
+.board-markdown p,
+.board-markdown li {
+  font-size: 1.0625rem;
+  line-height: 2.05;
+  color: #e2e8f0;
+}
+
+.board-markdown strong {
+  color: #ffffff;
+}
+
+.chat-markdown p:first-child,
+.chat-markdown ul:first-child,
+.chat-markdown ol:first-child {
+  margin-top: 0;
+}
+
+.chat-markdown p:last-child,
+.chat-markdown ul:last-child,
+.chat-markdown ol:last-child {
+  margin-bottom: 0;
+}
+
+.katex-display {
+  margin: 0.6em 0;
+  padding-bottom: 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.katex {
+  font-size: 1.05em;
+}
+
+/* ---------- 启动准备呼吸灯 ---------- */
+
+@keyframes prep-breath {
+  0% {
+    transform: scale(0.75);
+    opacity: 0.85;
+  }
+  70% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+.prep-breath {
+  position: relative;
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  background: #38bdf8;
+  box-shadow: 0 0 22px rgba(56, 189, 248, 0.65);
+}
+
+.prep-breath::before,
+.prep-breath::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: rgba(56, 189, 248, 0.8);
+  animation: prep-breath 2.2s ease-out infinite;
+}
+
+.prep-breath::after {
+  animation-delay: 1.1s;
+}
