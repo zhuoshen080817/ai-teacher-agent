@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import LectureBoard from './components/LectureBoard'
 import MarkdownView from './components/MarkdownView'
 import {
@@ -483,6 +483,7 @@ function App() {
   )
   const [referenceAudio, setReferenceAudio] = useState<File | null>(null)
   const [largeFileHint, setLargeFileHint] = useState('')
+  const [dragTarget, setDragTarget] = useState<'ppt' | 'audio' | null>(null)
 
   const chatScrollRef = useRef<HTMLDivElement>(null)
   const liveSessionRef = useRef(0)
@@ -1608,7 +1609,9 @@ function App() {
     }
   }
 
-  function handleAudioFiles(fileList: FileList | null | undefined) {
+  function handleAudioFiles(
+    fileList: FileList | File[] | null | undefined,
+  ) {
     if (!fileList || phase === 'uploading') return
 
     const files = Array.from(fileList)
@@ -1679,6 +1682,76 @@ function App() {
     setUploadStage(null)
     setUploadProgress(null)
     setPhase('idle')
+  }
+
+  /** 从拖拽事件里取文件；微信等客户端偶尔只写 items，不写 files。 */
+  function extractDroppedFiles(event: DragEvent<HTMLElement>) {
+    const transfer = event.dataTransfer
+    if (!transfer) return []
+
+    const files = Array.from(transfer.files ?? [])
+    if (files.length > 0) return files
+
+    const fromItems: File[] = []
+    for (const item of Array.from(transfer.items ?? [])) {
+      if (item.kind !== 'file') continue
+      const file = item.getAsFile()
+      if (file) fromItems.push(file)
+    }
+    return fromItems
+  }
+
+  function handleUploadDragOver(
+    event: DragEvent<HTMLElement>,
+    target: 'ppt' | 'audio',
+  ) {
+    if (phase === 'uploading') return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+    setDragTarget(target)
+  }
+
+  function handleUploadDragLeave(
+    event: DragEvent<HTMLElement>,
+    target: 'ppt' | 'audio',
+  ) {
+    // 在子元素之间移动时也会触发 dragleave，用 relatedTarget 过滤掉
+    const related = event.relatedTarget as Node | null
+    if (related && event.currentTarget.contains(related)) return
+    setDragTarget((current) => (current === target ? null : current))
+  }
+
+  function handleUploadDrop(
+    event: DragEvent<HTMLElement>,
+    target: 'ppt' | 'audio',
+  ) {
+    event.preventDefault()
+    event.stopPropagation()
+    setDragTarget(null)
+
+    if (phase === 'uploading') return
+
+    const files = extractDroppedFiles(event)
+    if (!files.length) {
+      setPhase('error')
+      setUploadMessage('没有识别到文件，请从微信聊天窗口重新拖拽一次')
+      return
+    }
+
+    if (target === 'ppt') {
+      const ppt = files.find((file) =>
+        file.name.toLowerCase().endsWith('.pptx'),
+      )
+      if (!ppt) {
+        setPhase('error')
+        setUploadMessage('PPT 课件仅支持 .pptx 格式')
+        return
+      }
+      handlePptFile(ppt)
+      return
+    }
+
+    handleAudioFiles(files)
   }
 
   function resetFlow() {
@@ -2110,7 +2183,11 @@ function App() {
             </header>
 
             {showUploadArea && (
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:p-6">
+              <div
+                className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:p-6"
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => event.preventDefault()}
+              >
                 <p className="text-sm text-slate-500">
                   课程科目会自动识别，无需手动填写。上传课堂录音即可开始整理。
                 </p>
@@ -2118,7 +2195,15 @@ function App() {
                 <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <label
                     htmlFor="ppt-upload"
-                    className={`flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 transition hover:border-sky-300 hover:bg-white ${
+                    onDragEnter={(event) => handleUploadDragOver(event, 'ppt')}
+                    onDragOver={(event) => handleUploadDragOver(event, 'ppt')}
+                    onDragLeave={(event) => handleUploadDragLeave(event, 'ppt')}
+                    onDrop={(event) => handleUploadDrop(event, 'ppt')}
+                    className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 transition ${
+                      dragTarget === 'ppt'
+                        ? 'border-sky-400 bg-sky-50 ring-2 ring-sky-200'
+                        : 'border-slate-200 bg-slate-50 hover:border-sky-300 hover:bg-white'
+                    } ${
                       phase === 'uploading'
                         ? 'pointer-events-none opacity-60'
                         : ''
@@ -2155,12 +2240,29 @@ function App() {
                       <p className="mt-0.5 text-xs text-slate-400">
                         {selectedPpt ? selectedPpt.name : '可选 · .pptx'}
                       </p>
+                      <p className="mt-1 text-[11px] font-medium leading-4 text-sky-600">
+                        💡 提示：您可以直接从微信聊天窗口将文件拖拽到此处上传
+                      </p>
                     </div>
                   </label>
 
                   <label
                     htmlFor="audio-upload"
-                    className={`flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 transition hover:border-sky-300 hover:bg-white ${
+                    onDragEnter={(event) =>
+                      handleUploadDragOver(event, 'audio')
+                    }
+                    onDragOver={(event) =>
+                      handleUploadDragOver(event, 'audio')
+                    }
+                    onDragLeave={(event) =>
+                      handleUploadDragLeave(event, 'audio')
+                    }
+                    onDrop={(event) => handleUploadDrop(event, 'audio')}
+                    className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 transition ${
+                      dragTarget === 'audio'
+                        ? 'border-sky-400 bg-sky-50 ring-2 ring-sky-200'
+                        : 'border-slate-200 bg-slate-50 hover:border-sky-300 hover:bg-white'
+                    } ${
                       phase === 'uploading'
                         ? 'pointer-events-none opacity-60'
                         : ''
@@ -2199,6 +2301,9 @@ function App() {
                         {selectedFiles.length > 0
                           ? `已选择 ${selectedFiles.length} 个文件`
                           : `可多选 · MP3 / WAV / M4A · 单文件 ≤ ${MAX_UPLOAD_SIZE_LABEL}`}
+                      </p>
+                      <p className="mt-1 text-[11px] font-medium leading-4 text-sky-600">
+                        💡 提示：您可以直接从微信聊天窗口将文件拖拽到此处上传
                       </p>
                     </div>
                   </label>
