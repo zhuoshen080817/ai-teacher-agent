@@ -165,8 +165,8 @@ flowchart LR
 - 左侧聊天回答在文字返回后自动调用 `/api/tts` 播报，气泡内显示小喇叭与「老师正在语音解答…」；若直播正在播放，会先暂停直播并记录恢复点，避免两个声音重叠。
 - 语速不使用 `audio.playbackRate`（会失真、有电音）：前端把 `speed`（0.5~2.0）传给 `/api/tts`，后端通过 CosyVoice 原生 `speech_rate` 参数合成，从下一句开始生效。
 - 「没听懂」时调用 `POST /api/explain_again`，把当前板书与步骤讲稿交给 DeepSeek，要求用更通俗的类比重新解释；播报完成后仍停留在当前步骤等待再次确认。
-- 语音合成使用 DashScope CosyVoice：`POST /api/tts` 接收文本，先经 `clean_text_for_tts()` 剔除 LaTeX（`$$...$$`、`$...$`、`\int` 等）、代码块与 Markdown 标记，再合成 16kHz 单声道 WAV 并修正流式 WAV 头后返回音频流，前端用 `new Audio(blobUrl)` 播放，替换浏览器 `speechSynthesis`。
-- 分镜 Prompt 明确禁止「XX 复习笔记」「第 X 章 XX」这类标题式废话，要求第一句直接切入知识点；前端使用 react-markdown + remark-math + rehype-katex 渲染正文、聊天与板书中的 `$...$` / `$$...$$` 公式。
+- 语音合成固定使用 DashScope CosyVoice `cosyvoice-v3-flash` / `longanhuan_v3`，代码不再读取其他音色、也不回退到 v2；`POST /api/tts` 接收文本后先经 `clean_text_for_tts()` 剔除 LaTeX、代码块、Markdown 标记与纯符号行，再合成 16kHz 单声道 WAV 并修正流式 WAV 头后返回音频流。清洗后为空时前端跳过 TTS、仅显示文字。
+- 分镜 Prompt 明确禁止大标题、章节名、课程总结与「整理自课堂录音」这类说明性文字，并要求跳过原文本中的标题，只从正文知识点开始；后端 `_is_meaningful_speech()` 会再过滤纯标题/纯符号片段，避免空白分镜。前端使用 react-markdown + remark-gfm + remark-math + rehype-katex 渲染正文、聊天与板书，GFM 表格会显示为 HTML 表格。
 - 「上传参考音频」入口已预留，仅记录文件，不发送后端，为后续 CosyVoice 音色克隆做准备。
 - 「生成讲解视频」按钮为预留位，代码注释标明后续可接入 Seedance 类视频生成接口，因延迟原因暂不启用。
 

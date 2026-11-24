@@ -1,4 +1,5 @@
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
@@ -27,6 +28,8 @@ export default function MarkdownView({
     ? 'border-sky-400/50 bg-white/5 text-slate-300'
     : 'border-sky-300 bg-sky-50 text-slate-600'
   const hrColor = dark ? 'border-white/10' : 'border-slate-200'
+  const tableBorder = dark ? 'border-white/15' : 'border-slate-200'
+  const tableHeadBg = dark ? 'bg-white/10' : 'bg-slate-100'
 
   const components: Components = {
     h1: ({ children }) => (
@@ -84,6 +87,32 @@ export default function MarkdownView({
       </blockquote>
     ),
     hr: () => <hr className={`my-4 border-t ${hrColor}`} />,
+    table: ({ children }) => (
+      <div className="my-3 overflow-x-auto">
+        <table
+          className={`w-full border-collapse text-sm ${bodyText}`}
+        >
+          {children}
+        </table>
+      </div>
+    ),
+    thead: ({ children }) => (
+      <thead className={tableHeadBg}>{children}</thead>
+    ),
+    th: ({ children }) => (
+      <th
+        className={`border px-3 py-2 text-left font-semibold ${tableBorder} ${strongText}`}
+      >
+        {children}
+      </th>
+    ),
+    td: ({ children }) => (
+      <td
+        className={`border px-3 py-2 align-top leading-6 ${tableBorder}`}
+      >
+        {children}
+      </td>
+    ),
     pre: ({ children }) => (
       <pre
         className={`my-3 overflow-x-auto rounded-lg p-3 text-xs leading-6 ${preBg}`}
@@ -116,7 +145,7 @@ export default function MarkdownView({
   return (
     <div className={dark ? 'text-slate-100' : 'text-slate-700'}>
       <ReactMarkdown
-        remarkPlugins={[remarkMath]}
+        remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
         components={components}
       >

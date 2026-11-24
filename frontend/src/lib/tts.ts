@@ -3,6 +3,13 @@ const CACHE_LIMIT = 60
 const MIN_SPEED = 0.5
 const MAX_SPEED = 2.0
 
+const SPEAKABLE_PATTERN = /[\p{L}\p{N}]/u
+
+/** 清洗后没有任何文字/数字（纯符号、纯破折号）时不调用 TTS，直接显示文字。 */
+export function hasSpeakableText(text: string) {
+  return SPEAKABLE_PATTERN.test(text)
+}
+
 const blobCache = new Map<string, Promise<Blob>>()
 
 let defaultSpeed = 1
@@ -143,6 +150,12 @@ export function playTts(text: string, options: PlayTtsOptions = {}): TtsPlayback
     resolveStarted()
     cleanup()
     resolveFinished()
+  }
+
+  if (!hasSpeakableText(text)) {
+    // 纯符号/纯空文本：不请求 TTS，文字仍然由界面直接展示
+    complete()
+    return { started, finished, stop }
   }
 
   void requestTtsBlob(text, speed)

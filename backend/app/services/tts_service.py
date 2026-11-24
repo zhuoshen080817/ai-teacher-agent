@@ -17,15 +17,10 @@ load_dotenv(settings.BASE_DIR / ".env")
 
 logger = logging.getLogger(__name__)
 
-# 默认使用 v3-flash + longanhuan_v3（龙安欢）。
-# 注意：实测 cosyvoice-v2 搭配 longanhuan_v2 会返回 418（模型与音色版本不匹配）；
-# 如果确实要回退到 v2，请改用官方 v2 音色 longxiaochun_v2（龙小淳）。
+# 固定使用 v3-flash + longanhuan_v3（龙安欢），不再回退到 v2。
+# 实测 cosyvoice-v2 / longxiaochun_v2 在当前文本上会触发 418，因此彻底移除回退。
 DEFAULT_MODEL = "cosyvoice-v3-flash"
 DEFAULT_VOICE = "longanhuan_v3"
-
-# v2 模型下经过验证可用的回退组合
-FALLBACK_MODEL = "cosyvoice-v2"
-FALLBACK_VOICE = "longxiaochun_v2"
 
 # 音色显示名，供前端展示；未收录的音色直接显示 voice id
 VOICE_DISPLAY_NAMES = {
@@ -51,11 +46,15 @@ BLOCK_MATH_PATTERN = re.compile(r"\$\$[\s\S]*?\$\$")
 INLINE_MATH_PATTERN = re.compile(r"\$[^$\n]{1,300}\$")
 LATEX_COMMAND_PATTERN = re.compile(r"\\[A-Za-z]+")
 LATEX_RESIDUE_PATTERN = re.compile(r"[\\{}$^_~]")
-MARKDOWN_MARK_PATTERN = re.compile(r"[*_`#>|~]")
+MARKDOWN_MARK_PATTERN = re.compile(r"[*_`#>~]")
+MEANINGFUL_CHAR_PATTERN = re.compile(r"[0-9A-Za-z\u4e00-\u9fff]")
+SYMBOL_ONLY_LINE_PATTERN = re.compile(
+    r"^[\s\-—–_=+*#.,，。;；:：!！?？、|/\\()（）\[\]【】<>《》\"'“”‘’…·`~]+$"
+)
 
 
 def clean_text_for_tts(text: str) -> str:
-    """清洗朗读文本：剔除 LaTeX 与 Markdown，避免 CosyVoice 返回 418。"""
+    """清洗朗读文本：剔除 LaTeX、Markdown 与纯符号行，避免 CosyVoice 418。"""
     if not text:
         return ""
 
@@ -72,11 +71,27 @@ def clean_text_for_tts(text: str) -> str:
     cleaned = re.sub(r"^\s*\d+\.\s+", "", cleaned, flags=re.MULTILINE)
     cleaned = re.sub(r"^\s*>\s?", "", cleaned, flags=re.MULTILINE)
 
+    # 表格竖线改为停顿，避免朗读成一串「竖线」（只处理行内空白，保留换行）
+    cleaned = re.sub(r"[ \t]*\|[ \t]*", "，", cleaned)
+
     # 残留的 LaTeX 命令与符号，例如 \int、\alpha、\frac{}{}
     cleaned = LATEX_COMMAND_PATTERN.sub("", cleaned)
     cleaned = LATEX_RESIDUE_PATTERN.sub("", cleaned)
     cleaned = MARKDOWN_MARK_PATTERN.sub("", cleaned)
 
+    # 丢弃纯符号行、空行，以及清洗后没有任何文字/数字的行
+    lines: list[str] = []
+    for line in cleaned.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if SYMBOL_ONLY_LINE_PATTERN.fullmatch(stripped):
+            continue
+        if not MEANINGFUL_CHAR_PATTERN.search(stripped):
+            continue
+        lines.append(stripped)
+
+    cleaned = "\n".join(lines)
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     cleaned = re.sub(r"\n{2,}", "\n", cleaned)
     return cleaned.strip()
@@ -99,60 +114,15 @@ def _voice_display_name(voice: str) -> str:
     return VOICE_DISPLAY_NAMES.get(voice, voice)
 
 
-def _adjust_voice_for_model(model: str, voice: str) -> str:
-    """按模型版本校正音色后缀，并处理已知不兼容的 longanhuan_v2。"""
-    if model.startswith("cosyvoice-v3"):
-        if voice.startswith("longanhuan") and voice != "longanhuan_v3":
-            logger.warning(
-                "[TTS] v3 模型不支持音色 %s，自动切换为 longanhuan_v3",
-                voice,
-            )
-            return "longanhuan_v3"
-        if voice.endswith("_v2"):
-            aligned = f"{voice[:-3]}_v3"
-            logger.warning(
-                "[TTS] 模型 %s 需要 v3 音色，音色 %s 自动对齐为 %s",
-                model,
-                voice,
-                aligned,
-            )
-            return aligned
-        return voice
-
-    if model == "cosyvoice-v2":
-        # longanhuan_v2 虽带 _v2 后缀，但 v2 引擎不支持，实测返回 418
-        if voice.startswith("longanhuan"):
-            logger.warning(
-                "[TTS] cosyvoice-v2 不支持 %s（DashScope 418），"
-                "自动回退到 %s",
-                voice,
-                FALLBACK_VOICE,
-            )
-            return FALLBACK_VOICE
-        if voice.endswith("_v3"):
-            aligned = f"{voice[:-3]}_v2"
-            logger.warning(
-                "[TTS] 模型 %s 需要 v2 音色，音色 %s 自动对齐为 %s",
-                model,
-                voice,
-                aligned,
-            )
-            return aligned
-        return voice
-
-    return voice
-
-
 def resolve_tts_config(voice_override: str | None = None) -> tuple[str, str]:
-    """返回实际用于合成的 (model, voice)，保证模型与音色版本匹配。"""
-    model = (os.getenv("COSYVOICE_MODEL") or DEFAULT_MODEL).strip()
-    raw_voice = (
-        voice_override
-        or os.getenv("COSYVOICE_VOICE")
-        or DEFAULT_VOICE
-    ).strip()
-
-    return model, _adjust_voice_for_model(model, raw_voice)
+    """固定返回 v3-flash + longanhuan_v3，彻底避免回退到 v2 触发 418。"""
+    if voice_override and voice_override.strip() not in {"", DEFAULT_VOICE}:
+        logger.warning(
+            "[TTS] 忽略请求音色 %s，强制使用 %s",
+            voice_override,
+            DEFAULT_VOICE,
+        )
+    return DEFAULT_MODEL, DEFAULT_VOICE
 
 
 def get_tts_info() -> dict[str, str]:
@@ -198,22 +168,13 @@ def _call_cosyvoice(
     return synthesizer.call(text)
 
 
-def _fallback_config(model: str) -> tuple[str, str] | None:
-    """当前组合失败时，换另一组已验证可用的组合。"""
-    if model.startswith("cosyvoice-v3"):
-        return FALLBACK_MODEL, FALLBACK_VOICE
-    if model == FALLBACK_MODEL:
-        return DEFAULT_MODEL, DEFAULT_VOICE
-    return None
-
-
 def _friendly_error(model: str, voice: str, error: Exception) -> str:
     message = str(error)
     hint = ""
     if "418" in message or "InvalidParameter" in message:
         hint = (
-            "；请检查模型与音色版本是否匹配：cosyvoice-v2 使用 longxiaochun_v2 等 "
-            "v2 官方音色，cosyvoice-v3-flash 使用 longanhuan_v3 等 _v3 音色"
+            "；当前固定使用 cosyvoice-v3-flash / longanhuan_v3，"
+            "请确认文本清洗后仍包含有效的中文或英文内容"
         )
     return (
         f"语音合成失败（model={model}, voice={voice}）：{message}{hint}"
@@ -263,66 +224,21 @@ def synthesize_speech(
         audio = _call_cosyvoice(
             model, selected_voice, normalized, api_key, speech_rate
         )
-    except Exception as exc:  # noqa: BLE001 首次合成失败时尝试回退组合
+    except Exception as exc:  # noqa: BLE001 固定 v3 合成失败直接报错，不再回退 v2
         logger.warning(
-            "[TTS] CosyVoice 首次合成失败：model=%s, voice=%s, chars=%s, error=%s",
+            "[TTS] CosyVoice 合成失败：model=%s, voice=%s, chars=%s, error=%s",
             model,
             selected_voice,
             len(normalized),
             exc,
         )
-        print(f"[TTS] 合成失败：model={model}, voice={selected_voice}, error={exc}")
-
-        fallback = _fallback_config(model)
-        if fallback is None:
-            raise RuntimeError(
-                _friendly_error(model, selected_voice, exc)
-            ) from exc
-
-        fb_model, fb_voice = fallback
-        if (fb_model, fb_voice) == (model, selected_voice):
-            raise RuntimeError(
-                _friendly_error(model, selected_voice, exc)
-            ) from exc
-
-        logger.warning(
-            "[TTS] 尝试回退组合：%s/%s -> %s/%s",
-            model,
-            selected_voice,
-            fb_model,
-            fb_voice,
-        )
         print(
-            f"[TTS] 回退合成：model={fb_model}, voice={fb_voice}, "
-            f"speed={speech_rate:.2f}"
+            f"[TTS] 合成失败：model={model}, voice={selected_voice}, "
+            f"error={exc}"
         )
-
-        try:
-            audio = _call_cosyvoice(
-                fb_model,
-                fb_voice,
-                normalized,
-                api_key,
-                speech_rate,
-            )
-        except Exception as fb_exc:  # noqa: BLE001 回退仍失败
-            logger.exception(
-                "[TTS] 回退组合仍失败：model=%s, voice=%s",
-                fb_model,
-                fb_voice,
-            )
-            print(
-                f"[TTS] 回退失败：model={fb_model}, voice={fb_voice}, "
-                f"error={fb_exc}"
-            )
-            raise RuntimeError(
-                _friendly_error(fb_model, fb_voice, fb_exc)
-            ) from fb_exc
-
-        model, selected_voice = fb_model, fb_voice
-        cache_key = hashlib.sha256(
-            f"{model}|{selected_voice}|{normalized}".encode("utf-8")
-        ).hexdigest()
+        raise RuntimeError(
+            _friendly_error(model, selected_voice, exc)
+        ) from exc
 
     if not audio:
         logger.error(

@@ -35,7 +35,7 @@
 
 | 层级 | 技术 |
 |---|---|
-| 前端 | React 19、Vite 8、TypeScript、Tailwind CSS v4、react-markdown + remark-math + rehype-katex |
+| 前端 | React 19、Vite 8、TypeScript、Tailwind CSS v4、react-markdown + remark-gfm + remark-math + rehype-katex |
 | 后端 | Python 3.13、FastAPI、Uvicorn |
 | 数据库 | SQLite + SQLAlchemy 2.x |
 | 语音识别 | 阿里云百炼 DashScope `paraformer-realtime-v2` + ffmpeg 转码切片 |
@@ -273,10 +273,10 @@ VITE_API_BASE_URL=http://127.0.0.1:8080
 - 长音频由 ffmpeg 按 5 分钟切片；切片保存在临时目录，任务结束后自动清理。
 - 后端不使用 pydub，也不需要 ffprobe；只需 `backend/bin/ffmpeg.exe`（或 PATH 中的 ffmpeg）。
 - 后台任务使用 FastAPI `BackgroundTasks`，服务重启会中断正在处理的任务，任务状态可能停留在 `pending`。
-- 直播讲解使用 CosyVoice 真实合成，依赖 `DASHSCOPE_API_KEY` 与对应音色权限；当前默认模型为 `cosyvoice-v3-flash`，音色为龙安欢（`longanhuan_v3`），可通过 `COSYVOICE_MODEL` / `COSYVOICE_VOICE` 覆盖。
-- 音色与模型必须版本匹配：v2 模型使用 `longxiaochun_v2` 等 v2 音色，v3 模型使用 `longanhuan_v3` 等 `_v3` 音色；`cosyvoice-v2 + longanhuan_v2` 会返回 418，服务已内置自动校正与回退。
-- 合成前会经 `clean_text_for_tts()` 清洗：剔除 `$$...$$` / `$...$` LaTeX、代码块与 Markdown 标记，避免 CosyVoice 因特殊字符返回 418。
-- 前端使用 react-markdown + remark-math + rehype-katex 渲染正文与板书，`$...$` / `$$...$$` 会显示为真正的数学公式。
+- 直播讲解使用 CosyVoice 真实合成，依赖 `DASHSCOPE_API_KEY` 与对应音色权限；模型与音色在代码中固定为 `cosyvoice-v3-flash` / `longanhuan_v3`，请求里传入其他音色会被忽略。
+- 服务不会再回退到 `cosyvoice-v2` / `longxiaochun_v2`，避免模型与音色不匹配触发 418。
+- 合成前会经 `clean_text_for_tts()` 清洗：剔除 `$$...$$` / `$...$` LaTeX、代码块、Markdown 标记，并丢弃纯 `--`、纯符号和清洗后无文字的行；如果清洗后为空，前端直接显示文字、不再调用 TTS。
+- 前端使用 react-markdown + remark-gfm + remark-math + rehype-katex 渲染正文与板书，`$...$` / `$$...$$` 会显示为数学公式，GFM 表格会渲染为真正的 HTML 表格。
 - 举手打断依赖浏览器 `webkitSpeechRecognition`，需在 `localhost` 或 HTTPS 环境运行并允许麦克风权限，Chrome / Edge 体验最佳。
 - 「生成讲解视频」按钮为 Seedance 类接口预留位，当前禁用。
 - 当前无用户体系与鉴权，适合本地开发与课程演示，不建议直接暴露到公网。

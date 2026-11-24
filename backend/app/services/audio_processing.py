@@ -142,6 +142,8 @@ def _build_prompt(
         "请结合 PPT 内容，推测录音中“这里”、“这个函数”等代词的具体含义。"
         "去除无意义的语气词，提炼核心知识点，以 Markdown 输出层级分明的 "
         f"{subject} 复习笔记（注意保留该学科的专业专有名词）。"
+        "排版要求：尽量使用有序或无序列表代替复杂表格，保持版面简洁；"
+        "如果确实需要表格，请使用标准 GFM 表格语法，确保表头与分隔行完整。"
     )
 
 
@@ -525,6 +527,38 @@ def _strip_markdown(markdown: str) -> str:
     return clean_text_for_tts(markdown)
 
 
+SPEECH_MIN_MEANINGFUL_CHARS = 8
+MEANINGFUL_CHAR_PATTERN = re.compile(r"[0-9A-Za-z\u4e00-\u9fff]")
+TITLE_ONLY_PATTERN = re.compile(
+    r"^(?:[A-Za-z0-9\u4e00-\u9fff·\-—\s]{0,24})?"
+    r"(?:复习笔记|课堂笔记|学习笔记|课程总结|课堂总结|内容总结|本节小结|本章小结|"
+    r"课程介绍|章节介绍|知识框架|学习目标|目录|大纲)"
+    r"(?:[：:\-—\s]*[A-Za-z0-9\u4e00-\u9fff·\-—\s]{0,24})?$"
+)
+META_ONLY_PATTERN = re.compile(
+    r"^.{0,8}(?:整理自|整理于|来源[:：]|本文档由|本笔记由|"
+    r"根据.{0,6}录音).{0,50}$"
+)
+
+
+def _is_meaningful_speech(text: str) -> bool:
+    """过滤纯符号、纯标题、整理说明等不能作为讲解内容的文本。"""
+    compact = re.sub(r"\s+", "", text or "")
+    if (
+        len(MEANINGFUL_CHAR_PATTERN.findall(compact))
+        < SPEECH_MIN_MEANINGFUL_CHARS
+    ):
+        return False
+
+    probe = compact.strip("`#*-—_·:：")
+    if not probe:
+        return False
+
+    return not (
+        TITLE_ONLY_PATTERN.match(probe) or META_ONLY_PATTERN.match(probe)
+    )
+
+
 def _fallback_storyboard(note_markdown: str) -> list[dict[str, object]]:
     """分镜生成失败时，按笔记自然段切分兜底，保证直播仍可播放。"""
     raw_segments = [
@@ -536,7 +570,7 @@ def _fallback_storyboard(note_markdown: str) -> list[dict[str, object]]:
     storyboard: list[dict[str, object]] = []
     for segment in raw_segments[:STORYBOARD_SEGMENT_LIMIT]:
         speech_text = _strip_markdown(segment)
-        if not speech_text:
+        if not speech_text or not _is_meaningful_speech(speech_text):
             continue
         storyboard.append(
             {
@@ -639,7 +673,16 @@ def _build_storyboard_prompt(
         '例如 A["这是文本"]、B{"是否继续"}；'
         "节点文本中不要出现未转义的双引号，不要使用 HTML 标签；"
         "mindmap 中如含方括号、圆括号等特殊字符，"
-        "请改用全角符号或双引号包裹。保证语法绝对正确。\n\n"
+        "请改用全角符号或双引号包裹。保证语法绝对正确。\n"
+        "10. 【禁止标题与废话】严禁生成任何大标题、章节名、课程名、目录、"
+        "课堂总结或说明性文字（例如「C语言 复习笔记：函数与递归」"
+        "「整理自课堂录音」「本节小结」「课程介绍」）。"
+        "如果课堂笔记或转写里出现这类标题、目录、说明，直接跳过，"
+        "从正文的第一个知识点或题目开始讲。"
+        "每一段 speech_text（包括每个 step）都必须是可以直接朗读的"
+        "干货知识点、推导过程或题目讲解，不能只是标题、日期或一句空话。"
+        "如果某段内容只包含换行符、破折号、星号等无意义符号，"
+        "不要为它生成分镜；宁可少一个分镜，也不要凑数。\n\n"
         f"## 课堂笔记\n{note_text}\n\n"
         f"## PPT 大纲\n{ppt_text}\n\n"
         f"## 录音转写节选\n{transcript_text}\n"
@@ -695,7 +738,7 @@ def _normalize_steps(raw_steps: object) -> list[dict[str, object]]:
             continue
 
         speech_text = _strip_markdown(str(item.get("speech_text") or ""))
-        if not speech_text:
+        if not speech_text or not _is_meaningful_speech(speech_text):
             continue
 
         steps.append(
@@ -772,14 +815,18 @@ def _normalize_storyboard(items: list[object]) -> list[dict[str, object]]:
             continue
 
         board_content = str(item.get("board_content") or "").strip()
-        if not board_content:
+        if not board_content or not MEANINGFUL_CHAR_PATTERN.search(
+            board_content
+        ):
             continue
 
         opening = _strip_markdown(str(item.get("speech_text") or ""))
+        if opening and not _is_meaningful_speech(opening):
+            opening = ""
         steps = _normalize_steps(item.get("step_by_step"))
 
         if steps:
-            if not opening:
+            if not opening and len(steps) > 1:
                 opening = steps[0]["speech_text"]
                 steps = steps[1:]
         else:

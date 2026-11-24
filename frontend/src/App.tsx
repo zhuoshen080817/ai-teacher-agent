@@ -184,6 +184,11 @@ function formatDateTime(value: string) {
   return value.replace('T', ' ').slice(0, 16)
 }
 
+/** 音频去重键：文件名 + 大小相同即视为同一文件。 */
+function audioFileKey(file: File) {
+  return `${file.name}::${file.size}`
+}
+
 function fallbackCopy(text: string) {
   const textarea = document.createElement('textarea')
   textarea.value = text
@@ -1614,38 +1619,46 @@ function App() {
   ) {
     if (!fileList || phase === 'uploading') return
 
-    const files = Array.from(fileList)
-    if (!files.length) return
+    const incoming = Array.from(fileList)
+    if (!incoming.length) return
 
-    for (const file of files) {
+    const invalid = incoming.find((file) => {
       const extension = file.name.split('.').pop()?.toLowerCase() ?? ''
+      return (
+        !ALLOWED_AUDIO_EXTENSIONS.includes(extension) ||
+        file.size > MAX_UPLOAD_SIZE
+      )
+    })
 
-      if (!ALLOWED_AUDIO_EXTENSIONS.includes(extension)) {
-        setSelectedFiles([])
-        setPhase('error')
-        setUploadMessage(
-          `文件「${file.name}」格式不支持，仅支持 MP3、WAV、M4A`,
-        )
-        return
-      }
-
-      if (file.size > MAX_UPLOAD_SIZE) {
-        setSelectedFiles([])
-        setPhase('error')
-        setUploadMessage(
-          `文件「${file.name}」大小不能超过 ${MAX_UPLOAD_SIZE_LABEL}`,
-        )
-        return
-      }
+    if (invalid) {
+      setPhase('error')
+      setUploadMessage(
+        invalid.size > MAX_UPLOAD_SIZE
+          ? `文件「${invalid.name}」大小不能超过 ${MAX_UPLOAD_SIZE_LABEL}`
+          : `文件「${invalid.name}」格式不支持，仅支持 MP3、WAV、M4A`,
+      )
+      return
     }
 
-    const needsConvert = files.some((file) => {
+    // 追加而不是覆盖；同名同大小视为重复文件，自动忽略
+    setSelectedFiles((previous) => {
+      const keys = new Set(previous.map(audioFileKey))
+      const unique = incoming.filter((file) => {
+        const key = audioFileKey(file)
+        if (keys.has(key)) return false
+        keys.add(key)
+        return true
+      })
+      return [...previous, ...unique]
+    })
+
+    const combined = [...selectedFiles, ...incoming]
+    const needsConvert = combined.some((file) => {
       const extension = file.name.split('.').pop()?.toLowerCase() ?? ''
       return file.size > LARGE_FILE_WARNING_SIZE && extension !== 'mp3'
     })
 
     setLargeFileHint(needsConvert ? LARGE_FILE_WARNING : '')
-    setSelectedFiles(files)
     setBatchCount(0)
     setTaskId(null)
     setPhase('idle')
@@ -1653,6 +1666,24 @@ function App() {
     setCopyState('idle')
     setUploadStage(null)
     setUploadProgress(null)
+  }
+
+  function removeAudioFile(index: number) {
+    const next = selectedFiles.filter(
+      (_, itemIndex) => itemIndex !== index,
+    )
+    setSelectedFiles(next)
+
+    if (!next.length) {
+      setLargeFileHint('')
+      setBatchCount(0)
+    }
+    setUploadStage(null)
+    setUploadProgress(null)
+    if (phase === 'error') {
+      setPhase('idle')
+      setUploadMessage('')
+    }
   }
 
   function handlePptFile(file: File | null | undefined) {
@@ -2350,14 +2381,25 @@ function App() {
                     <ul className="mt-2 max-h-36 divide-y divide-slate-200 overflow-y-auto">
                       {selectedFiles.map((file, index) => (
                         <li
-                          key={`${file.name}-${file.size}-${index}`}
+                          key={audioFileKey(file)}
                           className="flex items-center justify-between gap-3 py-1.5 text-xs"
                         >
                           <span className="truncate text-slate-600">
                             {index + 1}. {file.name}
                           </span>
-                          <span className="shrink-0 text-slate-400">
-                            {formatFileSize(file.size)}
+                          <span className="flex shrink-0 items-center gap-2">
+                            <span className="text-slate-400">
+                              {formatFileSize(file.size)}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => removeAudioFile(index)}
+                              aria-label={`移除 ${file.name}`}
+                              title="移除这个文件"
+                              className="flex h-5 w-5 items-center justify-center rounded-full text-slate-400 transition hover:bg-red-50 hover:text-red-500"
+                            >
+                              ×
+                            </button>
                           </span>
                         </li>
                       ))}
