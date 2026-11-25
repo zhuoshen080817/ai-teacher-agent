@@ -2025,30 +2025,30 @@ function App() {
 
   const liveStatusTone =
     liveState === 'playing'
-      ? 'bg-sky-400/10 text-sky-300 border-sky-400/30'
+      ? 'bg-white/[0.06] text-slate-300 border-white/10'
       : liveState === 'waiting'
-        ? 'bg-emerald-400/10 text-emerald-300 border-emerald-400/30'
+        ? 'bg-white/[0.08] text-slate-200 border-white/15'
         : liveState === 'quiz'
-          ? 'bg-indigo-400/10 text-indigo-300 border-indigo-400/30'
+          ? 'bg-white/[0.06] text-slate-300 border-white/10'
           : liveState === 'quiz-feedback'
-            ? 'bg-violet-400/10 text-violet-300 border-violet-400/30'
+            ? 'bg-white/[0.06] text-slate-300 border-white/10'
             : liveState === 'paused'
-              ? 'bg-amber-400/10 text-amber-300 border-amber-400/30'
+              ? 'bg-amber-200/[0.08] text-amber-100 border-amber-200/15'
               : liveState === 'explaining'
-              ? 'bg-fuchsia-400/10 text-fuchsia-300 border-fuchsia-400/30'
+              ? 'bg-white/[0.04] text-slate-400 border-white/10'
               : liveState === 'listening'
-                ? 'bg-amber-400/10 text-amber-300 border-amber-400/30'
+                ? 'bg-amber-200/[0.08] text-amber-100 border-amber-200/15'
                 : liveState === 'thinking' || liveState === 'interrupting'
-                  ? 'bg-violet-400/10 text-violet-300 border-violet-400/30'
+                  ? 'bg-white/[0.04] text-slate-400 border-white/10'
                   : liveState === 'resuming'
-                    ? 'bg-emerald-400/10 text-emerald-300 border-emerald-400/30'
-                    : 'bg-white/5 text-slate-400 border-white/15'
+                    ? 'bg-white/[0.08] text-slate-200 border-white/15'
+                    : 'bg-white/[0.04] text-slate-500 border-white/10'
 
   return (
-    <main className="min-h-screen bg-slate-100 lg:h-screen lg:overflow-hidden">
+    <main className="min-h-screen bg-[#f7f7f5] lg:h-screen lg:overflow-hidden">
       <div className="flex min-h-screen flex-col lg:h-full lg:flex-row">
-        <aside className="flex h-[65vh] min-h-[420px] shrink-0 flex-col border-b border-slate-200 bg-white lg:h-full lg:min-h-0 lg:w-2/5 lg:border-b-0 lg:border-r">
-          <header className="border-b border-slate-100 px-5 py-4">
+        <aside className="flex h-[65vh] min-h-[420px] shrink-0 flex-col border-b border-slate-200/70 bg-white/70 backdrop-blur-2xl lg:h-full lg:min-h-0 lg:w-2/5 lg:border-b-0 lg:border-r">
+          <header className="border-b border-slate-200/60 px-5 py-4">
             <div className="flex items-center gap-3">
               <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-900 text-sm font-semibold text-white">
                 AI
@@ -2081,9 +2081,9 @@ function App() {
                     {message.content}
                   </div>
                 ) : (
-                  <div className="chat-markdown max-w-[85%] rounded-2xl border border-slate-200 bg-white px-4 py-2.5">
+                  <div className="chat-markdown max-w-[85%] rounded-2xl border border-slate-200/70 bg-white/75 px-4 py-2.5 backdrop-blur-xl">
                     {speakingMessageId === message.id && (
-                      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-sky-600">
+                      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-slate-500">
                         <svg
                           className="h-3.5 w-3.5 animate-pulse"
                           viewBox="0 0 24 24"
@@ -2109,22 +2109,22 @@ function App() {
 
             {chatLoading && (
               <div className="flex justify-start">
-                <div className="flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-400 [animation-delay:-0.3s]" />
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-400 [animation-delay:-0.15s]" />
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-400" />
+                <div className="flex items-center gap-1.5 rounded-2xl border border-slate-200/70 bg-white/75 px-4 py-3 backdrop-blur-xl">
+                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.3s]" />
+                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.15s]" />
+                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400" />
                 </div>
               </div>
             )}
           </div>
 
-          <div className="border-t border-slate-100 bg-white p-4">
+          <div className="border-t border-slate-200/60 bg-white/60 p-4 backdrop-blur-xl">
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
                 onClick={() => runQuickAction('summary')}
                 disabled={!result || chatLoading}
-                className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600 transition hover:border-sky-300 hover:text-sky-600 disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded-full border border-slate-200/80 bg-white/70 px-3 py-1.5 text-xs text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 总结当前笔记
               </button>
@@ -2132,7 +2132,7 @@ function App() {
                 type="button"
                 onClick={() => runQuickAction('explain')}
                 disabled={!result || chatLoading}
-                className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600 transition hover:border-sky-300 hover:text-sky-600 disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded-full border border-slate-200/80 bg-white/70 px-3 py-1.5 text-xs text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 解释某个概念
               </button>
@@ -2151,7 +2151,7 @@ function App() {
                 }}
                 placeholder="问我任何关于这堂课的问题…"
                 disabled={chatLoading}
-                className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-sky-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-100 disabled:opacity-60"
+                className="min-w-0 flex-1 rounded-xl border border-slate-200/80 bg-white/70 px-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-slate-200/60 disabled:opacity-60"
               />
               <button
                 type="button"
@@ -2165,11 +2165,11 @@ function App() {
           </div>
         </aside>
 
-        <section className="min-w-0 flex-1 overflow-y-auto bg-slate-100">
+        <section className="min-w-0 flex-1 overflow-y-auto bg-[#f7f7f5]">
           <div className="mx-auto w-full max-w-4xl px-5 py-8 lg:px-8 lg:py-10">
             <header className="mb-6 flex items-start justify-between gap-4">
               <div>
-                <p className="text-xs font-medium uppercase tracking-[0.2em] text-sky-600">
+                <p className="text-xs font-medium uppercase tracking-[0.2em] text-slate-400">
                   Workspace
                 </p>
                 <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">
@@ -2191,7 +2191,7 @@ function App() {
                   {mockLoading ? '加载中…' : '加载测试数据（免上传）'}
                 </button>
 
-                <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs">
+                <div className="flex items-center gap-2 rounded-full border border-slate-200/80 bg-white/70 px-3 py-1.5 text-xs backdrop-blur-xl">
                   {status === 'loading' && (
                     <span className="text-slate-500">连接中…</span>
                   )}
@@ -2215,7 +2215,7 @@ function App() {
 
             {showUploadArea && (
               <div
-                className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:p-6"
+                className="rounded-3xl border border-slate-200/70 bg-white/70 p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)] backdrop-blur-xl lg:p-6"
                 onDragOver={(event) => event.preventDefault()}
                 onDrop={(event) => event.preventDefault()}
               >
@@ -2230,10 +2230,10 @@ function App() {
                     onDragOver={(event) => handleUploadDragOver(event, 'ppt')}
                     onDragLeave={(event) => handleUploadDragLeave(event, 'ppt')}
                     onDrop={(event) => handleUploadDrop(event, 'ppt')}
-                    className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 transition ${
+                    className={`flex cursor-pointer items-center gap-3 rounded-2xl border px-4 py-3 transition ${
                       dragTarget === 'ppt'
-                        ? 'border-sky-400 bg-sky-50 ring-2 ring-sky-200'
-                        : 'border-slate-200 bg-slate-50 hover:border-sky-300 hover:bg-white'
+                        ? 'border-slate-400/70 bg-slate-100/80 ring-1 ring-slate-300/60'
+                        : 'border-slate-200/80 bg-white/60 hover:border-slate-300 hover:bg-white'
                     } ${
                       phase === 'uploading'
                         ? 'pointer-events-none opacity-60'
@@ -2251,7 +2251,7 @@ function App() {
                       }}
                     />
                     <svg
-                      className="h-6 w-6 shrink-0 text-sky-500"
+                      className="h-6 w-6 shrink-0 text-slate-500"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
@@ -2271,7 +2271,7 @@ function App() {
                       <p className="mt-0.5 text-xs text-slate-400">
                         {selectedPpt ? selectedPpt.name : '可选 · .pptx'}
                       </p>
-                      <p className="mt-1 text-[11px] font-medium leading-4 text-sky-600">
+                      <p className="mt-1 text-[11px] font-medium leading-4 text-slate-500">
                         💡 提示：您可以直接从微信聊天窗口将文件拖拽到此处上传
                       </p>
                     </div>
@@ -2289,10 +2289,10 @@ function App() {
                       handleUploadDragLeave(event, 'audio')
                     }
                     onDrop={(event) => handleUploadDrop(event, 'audio')}
-                    className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 transition ${
+                    className={`flex cursor-pointer items-center gap-3 rounded-2xl border px-4 py-3 transition ${
                       dragTarget === 'audio'
-                        ? 'border-sky-400 bg-sky-50 ring-2 ring-sky-200'
-                        : 'border-slate-200 bg-slate-50 hover:border-sky-300 hover:bg-white'
+                        ? 'border-slate-400/70 bg-slate-100/80 ring-1 ring-slate-300/60'
+                        : 'border-slate-200/80 bg-white/60 hover:border-slate-300 hover:bg-white'
                     } ${
                       phase === 'uploading'
                         ? 'pointer-events-none opacity-60'
@@ -2311,7 +2311,7 @@ function App() {
                       }}
                     />
                     <svg
-                      className="h-6 w-6 shrink-0 text-sky-500"
+                      className="h-6 w-6 shrink-0 text-slate-500"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
@@ -2333,7 +2333,7 @@ function App() {
                           ? `已选择 ${selectedFiles.length} 个文件`
                           : `可多选 · MP3 / WAV / M4A · 单文件 ≤ ${MAX_UPLOAD_SIZE_LABEL}`}
                       </p>
-                      <p className="mt-1 text-[11px] font-medium leading-4 text-sky-600">
+                      <p className="mt-1 text-[11px] font-medium leading-4 text-slate-500">
                         💡 提示：您可以直接从微信聊天窗口将文件拖拽到此处上传
                       </p>
                     </div>
@@ -2424,7 +2424,7 @@ function App() {
                 </button>
 
                 {phase === 'uploading' && (
-                  <div className="mt-3 rounded-xl border border-sky-200 bg-sky-50/70 px-3 py-2.5">
+                  <div className="mt-3 rounded-2xl border border-slate-200/70 bg-white/60 px-3 py-2.5">
                     <div className="flex items-center justify-between gap-3 text-xs">
                       <span className="text-slate-600">
                         {uploadStage === 'ppt'
@@ -2435,14 +2435,14 @@ function App() {
                               : `正在上传 ${selectedFiles.length} 个音频到服务器…`
                             : '正在准备上传…'}
                       </span>
-                      <span className="font-semibold tabular-nums text-sky-700">
+                      <span className="font-semibold tabular-nums text-slate-700">
                         {uploadProgress ? `${uploadPercent}%` : '—'}
                       </span>
                     </div>
 
                     <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-200">
                       <div
-                        className={`h-full rounded-full bg-gradient-to-r from-sky-400 to-blue-600 transition-[width] duration-200 ${
+                        className={`h-full rounded-full bg-slate-900 transition-[width] duration-200 ${
                           uploadProgress ? '' : 'w-1/4 animate-pulse'
                         }`}
                         style={
@@ -2473,10 +2473,10 @@ function App() {
             )}
 
             {phase === 'processing' && (
-              <div className="rounded-2xl border border-slate-200 bg-white px-6 py-8 shadow-sm lg:px-8">
+              <div className="rounded-3xl border border-slate-200/70 bg-white/70 px-6 py-8 shadow-[0_1px_2px_rgba(15,23,42,0.04)] backdrop-blur-xl lg:px-8">
                 <div className="flex flex-wrap items-end justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="text-xs font-medium uppercase tracking-[0.2em] text-sky-600">
+                    <p className="text-xs font-medium uppercase tracking-[0.2em] text-slate-400">
                       Preparing
                     </p>
                     <h2 className="mt-1 text-xl font-semibold tracking-tight text-slate-900">
@@ -2499,7 +2499,7 @@ function App() {
 
                 <div className="mt-5 h-2.5 w-full overflow-hidden rounded-full bg-slate-100">
                   <div
-                    className="h-full rounded-full bg-gradient-to-r from-sky-400 via-sky-500 to-blue-600 transition-[width] duration-700 ease-out"
+                    className="h-full rounded-full bg-slate-900 transition-[width] duration-700 ease-out"
                     style={{
                       width: `${Math.max(processingProgress, 2)}%`,
                     }}
@@ -2524,7 +2524,7 @@ function App() {
                   <button
                     type="button"
                     onClick={() => void interruptClass()}
-                    className="fixed bottom-5 right-5 z-40 inline-flex items-center gap-2 rounded-full bg-amber-400 px-4 py-3 text-sm font-semibold text-amber-950 shadow-2xl shadow-amber-500/40 transition hover:bg-amber-300 sm:bottom-7 sm:right-7"
+                    className="fixed bottom-5 right-5 z-40 inline-flex items-center gap-2 rounded-full bg-[#f3c969] px-4 py-3 text-sm font-semibold text-slate-900 shadow-[0_10px_30px_-12px_rgba(15,23,42,0.35)] transition hover:bg-[#f7d47d] sm:bottom-7 sm:right-7"
                     title="随时暂停课程并提问（空格）"
                   >
                     <svg
@@ -2545,11 +2545,11 @@ function App() {
                   </button>
                 )}
 
-                <div className="lecture-canvas relative overflow-hidden rounded-3xl border border-slate-800 shadow-2xl shadow-slate-900/25">
+                <div className="lecture-canvas relative overflow-hidden rounded-[28px] border border-white/10 shadow-[0_24px_60px_-36px_rgba(15,23,42,0.55)]">
                   <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 px-4 py-3 lg:px-6">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="inline-flex items-center gap-1.5 rounded-full bg-red-500/15 px-2.5 py-1 text-[11px] font-semibold tracking-wide text-red-400">
-                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-500" />
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-red-400/10 px-2.5 py-1 text-[11px] font-semibold tracking-wide text-red-300">
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-400/80" />
                         LIVE
                       </span>
                       <span className="text-sm font-medium text-slate-100">
@@ -2580,7 +2580,7 @@ function App() {
                         onClick={() => goToLiveSegment(liveIndex - 1)}
                         disabled={isLiveBusy || liveIndex === 0}
                         aria-label="上一个分镜"
-                        className="flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-white/5 text-sm text-slate-300 transition hover:border-sky-400/40 hover:text-sky-300 disabled:cursor-not-allowed disabled:opacity-30"
+                        className="flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-white/5 text-sm text-slate-300 transition hover:border-white/25 hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
                       >
                         ‹
                       </button>
@@ -2591,7 +2591,7 @@ function App() {
                           isLiveBusy || liveIndex >= liveStoryboard.length - 1
                         }
                         aria-label="下一个分镜"
-                        className="flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-white/5 text-sm text-slate-300 transition hover:border-sky-400/40 hover:text-sky-300 disabled:cursor-not-allowed disabled:opacity-30"
+                        className="flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-white/5 text-sm text-slate-300 transition hover:border-white/25 hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
                       >
                         ›
                       </button>
@@ -2604,10 +2604,10 @@ function App() {
                     </span>
 
                     <div className="relative flex items-end justify-between gap-3">
-                      <div className="text-[11px] uppercase tracking-[0.22em] text-sky-300/70">
+                      <div className="text-[11px] uppercase tracking-[0.22em] text-slate-400">
                         Segment {String(liveIndex + 1).padStart(2, '0')}
                         {liveStepIndex >= 0 && totalSteps > 0 && (
-                          <span className="ml-2 normal-case tracking-normal text-sky-200/80">
+                          <span className="ml-2 normal-case tracking-normal text-slate-400">
                             步骤 {liveStepIndex + 1}/{totalSteps}
                           </span>
                         )}
@@ -2632,7 +2632,7 @@ function App() {
                       />
 
                       {isPreparing && (
-                        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-5 rounded-2xl bg-[#040a14]/88 backdrop-blur-sm">
+                        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-5 rounded-2xl bg-[#0f1114]/90 backdrop-blur-sm">
                           <span className="prep-breath" aria-hidden="true" />
                           <div className="text-center">
                             <p className="text-sm font-medium text-slate-100">
@@ -2648,7 +2648,7 @@ function App() {
 
                     <div className="relative mt-4 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
                       <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-slate-500">
-                        <span className="h-1.5 w-1.5 rounded-full bg-sky-400/70" />
+                        <span className="h-1.5 w-1.5 rounded-full bg-slate-400/70" />
                         实时字幕
                       </div>
                       <p
@@ -2662,8 +2662,8 @@ function App() {
                       </p>
 
                       {liveFocus && (
-                        <p className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-sky-400/20 bg-sky-400/10 px-2.5 py-1 text-[11px] text-sky-200">
-                          <span className="h-1 w-1 rounded-full bg-sky-300" />
+                        <p className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
+                          <span className="h-1 w-1 rounded-full bg-slate-400" />
                           正在聚焦：{liveFocus}
                         </p>
                       )}
@@ -2671,9 +2671,9 @@ function App() {
 
                     {/* 举手打断：语音没听清或麦克风不可用时，改为文字提问 */}
                     {showInterruptInput && (
-                      <div className="relative mt-4 rounded-2xl border border-amber-400/30 bg-amber-400/[0.07] p-4">
+                      <div className="relative mt-4 rounded-2xl border border-amber-200/15 bg-amber-100/[0.04] p-4 backdrop-blur-sm">
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                          <p className="text-sm font-medium text-amber-100">
+                          <p className="text-sm font-medium text-amber-50/90">
                             同学，怎么啦？
                           </p>
                           <span className="text-[11px] text-slate-400">
@@ -2699,7 +2699,7 @@ function App() {
                               }
                             }}
                             placeholder="例如：老师我去上厕所 / 等我一下 / 这里为什么这样推导？"
-                            className="min-w-0 flex-1 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-amber-400/50 focus:outline-none"
+                            className="min-w-0 flex-1 rounded-xl border border-white/10 bg-[#17181b] px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-amber-200/30 focus:outline-none"
                           />
                           <button
                             type="button"
@@ -2710,7 +2710,7 @@ function App() {
                               }
                             }}
                             disabled={!interruptInput.trim()}
-                            className="shrink-0 rounded-xl bg-amber-400 px-4 py-2 text-sm font-semibold text-amber-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-40"
+                            className="shrink-0 rounded-xl bg-[#f3c969] px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-[#f7d47d] disabled:cursor-not-allowed disabled:opacity-40"
                           >
                             发送
                           </button>
@@ -2731,9 +2731,9 @@ function App() {
 
                     {/* 暂停状态：等学生准备好再继续 */}
                     {liveState === 'paused' && !showInterruptInput && (
-                      <div className="relative mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-400/30 bg-amber-400/[0.07] p-4">
+                      <div className="relative mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200/15 bg-amber-100/[0.04] p-4 backdrop-blur-sm">
                         <div>
-                          <p className="text-sm font-medium text-amber-100">
+                          <p className="text-sm font-medium text-amber-50/90">
                             要继续刚才的内容吗？
                           </p>
                           <p className="mt-0.5 text-[11px] text-slate-400">
@@ -2745,14 +2745,14 @@ function App() {
                           <button
                             type="button"
                             onClick={resumeAfterInterrupt}
-                            className="rounded-full bg-emerald-500 px-4 py-2 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-400"
+                            className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-100"
                           >
                             继续刚才的内容
                           </button>
                           <button
                             type="button"
                             onClick={() => void interruptClass()}
-                            className="rounded-full border border-amber-400/40 bg-amber-400/10 px-3.5 py-2 text-xs font-medium text-amber-200 transition hover:bg-amber-400/20"
+                            className="rounded-full border border-white/15 bg-white/5 px-3.5 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
                           >
                             我还有问题
                           </button>
@@ -2763,10 +2763,10 @@ function App() {
                     {/* 随堂小测：每个分镜讲完后作答，再继续下一段 */}
                     {(liveState === 'quiz' || liveState === 'quiz-feedback') &&
                       activeQuiz && (
-                        <div className="relative mt-4 rounded-2xl border border-indigo-400/30 bg-indigo-400/[0.07] p-4">
+                        <div className="relative mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4 backdrop-blur-sm">
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-400/15 px-2.5 py-1 text-[11px] font-semibold text-indigo-200">
-                              <span className="h-1.5 w-1.5 rounded-full bg-indigo-300" />
+                            <span className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.06] px-2.5 py-1 text-[11px] font-semibold text-slate-200">
+                              <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
                               随堂小测
                             </span>
                             <span className="text-[11px] text-slate-400">
@@ -2791,20 +2791,20 @@ function App() {
                               const revealed = quizVerdict !== null
 
                               let tone =
-                                'border-white/10 bg-white/5 text-slate-200 hover:border-indigo-400/40 hover:bg-white/10'
+                                'border-white/10 bg-white/[0.03] text-slate-200 hover:border-white/25 hover:bg-white/[0.07]'
                               if (revealed && isAnswer) {
                                 tone =
-                                  'border-emerald-400/50 bg-emerald-400/15 text-emerald-100'
+                                  'border-emerald-300/35 bg-emerald-300/[0.1] text-emerald-50'
                               } else if (
                                 revealed &&
                                 isChosen &&
                                 !isAnswer
                               ) {
                                 tone =
-                                  'border-red-400/50 bg-red-400/15 text-red-100'
+                                  'border-red-300/35 bg-red-300/[0.1] text-red-50'
                               } else if (isChosen) {
                                 tone =
-                                  'border-indigo-400/60 bg-indigo-400/15 text-white'
+                                  'border-white/40 bg-white/[0.1] text-white'
                               }
 
                               return (
@@ -2834,7 +2834,7 @@ function App() {
                                     quizChoice ?? activeQuiz.correct_answer,
                                   )
                                 }
-                                className="rounded-full bg-emerald-500 px-4 py-2 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-400"
+                                className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-100"
                               >
                                 我真懂了
                               </button>
@@ -2846,7 +2846,7 @@ function App() {
                                     quizChoice ?? activeQuiz.correct_answer,
                                   )
                                 }
-                                className="rounded-full border border-amber-400/40 bg-amber-400/10 px-4 py-2 text-sm font-medium text-amber-200 transition hover:bg-amber-400/20"
+                                className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
                               >
                                 我是蒙的
                               </button>
@@ -2862,7 +2862,7 @@ function App() {
                     <div className="relative mt-4 rounded-2xl border border-white/10 bg-white/[0.04] p-3.5">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-slate-500">
-                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400/80" />
+                          <span className="h-1.5 w-1.5 rounded-full bg-slate-500" />
                           互动控制
                         </div>
                         <span className="text-[11px] text-slate-400">
@@ -2875,10 +2875,10 @@ function App() {
                           type="button"
                           onClick={handleUnderstood}
                           disabled={liveState !== 'waiting'}
-                          className="inline-flex items-center gap-2 rounded-full bg-emerald-500 px-4 py-2 text-sm font-semibold text-emerald-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-slate-500 disabled:shadow-none"
+                          className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-slate-500"
                         >
                           听懂了，下一步
-                          <kbd className="rounded border border-emerald-900/20 bg-emerald-900/10 px-1.5 py-0.5 text-[10px] font-normal">
+                          <kbd className="rounded border border-slate-900/10 bg-slate-900/5 px-1.5 py-0.5 text-[10px] font-normal text-slate-600">
                             Enter
                           </kbd>
                         </button>
@@ -2887,10 +2887,10 @@ function App() {
                           type="button"
                           onClick={() => void handleNotUnderstood()}
                           disabled={liveState !== 'waiting'}
-                          className="inline-flex items-center gap-2 rounded-full border border-amber-400/40 bg-amber-400/10 px-4 py-2 text-sm font-medium text-amber-200 transition hover:bg-amber-400/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
+                          className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.04] px-4 py-2 text-sm font-medium text-slate-200 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
                         >
                           没听懂，再讲讲
-                          <kbd className="rounded border border-amber-300/30 bg-amber-300/10 px-1.5 py-0.5 text-[10px] font-normal text-amber-300/80">
+                          <kbd className="rounded border border-white/15 bg-white/5 px-1.5 py-0.5 text-[10px] font-normal text-slate-400">
                             R
                           </kbd>
                         </button>
@@ -2900,8 +2900,8 @@ function App() {
                           onClick={() => void toggleSlowMode()}
                           className={`inline-flex items-center gap-2 rounded-full border px-3.5 py-2 text-xs font-medium transition ${
                             isSlowMode
-                              ? 'border-sky-400/50 bg-sky-400/15 text-sky-200'
-                              : 'border-white/15 bg-white/5 text-slate-300 hover:border-sky-400/40 hover:text-sky-200'
+                              ? 'border-white/30 bg-white/[0.12] text-white'
+                              : 'border-white/15 bg-white/5 text-slate-300 hover:border-white/25 hover:text-white'
                           }`}
                           title={
                             isSlowMode
@@ -2934,7 +2934,7 @@ function App() {
                             aria-label={`切换到第 ${index + 1} 段分镜`}
                             className={`h-2 w-2 rounded-full transition ${
                               index === liveIndex
-                                ? 'bg-sky-400 ring-2 ring-sky-400/30'
+                                ? 'bg-white ring-2 ring-white/20'
                                 : 'bg-white/20 hover:bg-white/40'
                             } disabled:cursor-not-allowed`}
                           />
@@ -2947,7 +2947,7 @@ function App() {
 
                     <div className="relative mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-white/10 pt-4">
                       <div className="flex flex-wrap items-center gap-2">
-                        <label className="inline-flex cursor-pointer items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-[11px] text-slate-300 transition hover:border-sky-400/40 hover:text-sky-200">
+                        <label className="inline-flex cursor-pointer items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-[11px] text-slate-300 transition hover:border-white/25 hover:text-white">
                           <input
                             type="file"
                             accept=".mp3,.wav,.m4a,audio/*"
@@ -3014,7 +3014,7 @@ function App() {
                               changeTtsSpeed(Number(event.target.value))
                             }
                             aria-label="语速调节"
-                            className="cursor-pointer rounded-md border border-white/10 bg-slate-900 px-2 py-1 text-xs font-medium text-slate-200 focus:border-sky-400/50 focus:outline-none"
+                            className="cursor-pointer rounded-md border border-white/10 bg-[#17181b] px-2 py-1 text-xs font-medium text-slate-200 focus:border-white/30 focus:outline-none"
                           >
                             <option value={0.8}>慢速 0.8x</option>
                             <option value={1}>正常 1.0x</option>
@@ -3040,7 +3040,7 @@ function App() {
                           <button
                             type="button"
                             onClick={startClass}
-                            className="rounded-full bg-sky-500 px-5 py-2 text-sm font-semibold text-slate-950 shadow-lg shadow-sky-500/30 transition hover:bg-sky-400"
+                            className="rounded-full bg-white px-5 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-100"
                           >
                             {liveState === 'ended' ? '重新上课' : '开始上课'}
                           </button>
@@ -3050,7 +3050,7 @@ function App() {
                   </div>
                 </div>
 
-                <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:p-6">
+                <div className="mt-4 rounded-3xl border border-slate-200/70 bg-white/70 p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)] backdrop-blur-xl lg:p-6">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <h2 className="text-xl font-semibold tracking-tight text-slate-900">
@@ -3072,7 +3072,7 @@ function App() {
                             ? 'border-emerald-200 bg-emerald-50 text-emerald-600'
                             : copyState === 'error'
                               ? 'border-red-200 bg-red-50 text-red-600'
-                              : 'border-slate-200 text-slate-500 hover:border-sky-300 hover:text-sky-600'
+                              : 'border-slate-200 text-slate-500 hover:border-slate-300 hover:text-slate-900'
                         }`}
                       >
                         {copyState === 'copied'
@@ -3178,7 +3178,7 @@ function App() {
                   type="button"
                   onClick={() => void loadHistory()}
                   disabled={historyLoading}
-                  className="shrink-0 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-500 transition hover:border-sky-300 hover:text-sky-600 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="shrink-0 rounded-full border border-slate-200 bg-white/70 px-3 py-1 text-xs font-medium text-slate-500 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {historyLoading ? '刷新中…' : '刷新'}
                 </button>
@@ -3191,16 +3191,16 @@ function App() {
               )}
 
               {historyLoading && history.length === 0 ? (
-                <div className="mt-4 flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-8 text-sm text-slate-400">
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-200 border-t-sky-500" />
+                <div className="mt-4 flex items-center justify-center gap-2 rounded-3xl border border-slate-200/70 bg-white/60 px-4 py-8 text-sm text-slate-400 backdrop-blur-xl">
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-200 border-t-slate-500" />
                   正在加载历史记录…
                 </div>
               ) : history.length === 0 ? (
-                <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-8 text-center text-sm text-slate-400">
+                <div className="mt-4 rounded-3xl border border-dashed border-slate-300/80 bg-white/50 px-4 py-8 text-center text-sm text-slate-400 backdrop-blur-xl">
                   暂无历史记录，上传一段录音开始体验吧
                 </div>
               ) : (
-                <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                <div className="mt-4 overflow-hidden rounded-3xl border border-slate-200/70 bg-white/70 backdrop-blur-xl">
                   <ul className="divide-y divide-slate-100">
                     {history.map((item) => {
                       const isActive = item.task_id === taskId
@@ -3212,7 +3212,7 @@ function App() {
                             onClick={() => void openHistoryTask(item.task_id)}
                             className={`flex w-full items-center gap-3 px-4 py-3 text-left transition ${
                               isActive
-                                ? 'bg-sky-50/80'
+                                ? 'bg-slate-100/70'
                                 : 'hover:bg-slate-50'
                             }`}
                           >

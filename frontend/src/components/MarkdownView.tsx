@@ -25,8 +25,8 @@ export default function MarkdownView({
     : 'bg-slate-200/80 text-slate-800'
   const preBg = dark ? 'bg-black/50 text-slate-100' : 'bg-slate-800 text-slate-100'
   const quoteStyle = dark
-    ? 'border-sky-400/50 bg-white/5 text-slate-300'
-    : 'border-sky-300 bg-sky-50 text-slate-600'
+    ? 'border-slate-500/50 bg-white/5 text-slate-300'
+    : 'border-slate-300 bg-slate-50 text-slate-600'
   const hrColor = dark ? 'border-white/10' : 'border-slate-200'
   const tableBorder = dark ? 'border-white/15' : 'border-slate-200'
   const tableHeadBg = dark ? 'bg-white/10' : 'bg-slate-100'
@@ -74,7 +74,7 @@ export default function MarkdownView({
         href={href}
         target="_blank"
         rel="noreferrer"
-        className="text-sky-500 underline underline-offset-2"
+        className="text-slate-600 underline underline-offset-2"
       >
         {children}
       </a>

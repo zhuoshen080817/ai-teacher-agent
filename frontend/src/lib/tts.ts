@@ -3,14 +3,15 @@ const CACHE_LIMIT = 60
 const MIN_SPEED = 0.5
 const MAX_SPEED = 2.0
 
-const SPEAKABLE_PATTERN = /[\p{L}\p{N}]/u
+const SPEAKABLE_PATTERN = /[\p{L}\p{N}]/gu
 
-/** 清洗后没有任何文字/数字（纯符号、纯破折号）时不调用 TTS，直接显示文字。 */
+/** 清洗后没有任何文字/数字（纯符号）或极短时不调用 TTS，直接显示文字。 */
 export function hasSpeakableText(text: string) {
-  return SPEAKABLE_PATTERN.test(text)
+  const matches = text.match(SPEAKABLE_PATTERN)
+  return (matches?.length ?? 0) >= 2
 }
 
-const blobCache = new Map<string, Promise<Blob>>()
+const blobCache = new Map<string, Promise<Blob | null>>()
 
 let defaultSpeed = 1
 
@@ -41,7 +42,10 @@ async function readErrorDetail(response: Response) {
   }
 }
 
-function requestTtsBlob(text: string, speed: number): Promise<Blob> {
+function requestTtsBlob(
+  text: string,
+  speed: number,
+): Promise<Blob | null> {
   const key = cacheKey(text, speed)
   const cached = blobCache.get(key)
   if (cached) return cached
@@ -53,6 +57,8 @@ function requestTtsBlob(text: string, speed: number): Promise<Blob> {
     },
     body: JSON.stringify({ text, speed }),
   }).then(async (response) => {
+    // 后端判断文本无需朗读时返回 204，前端直接跳过播放
+    if (response.status === 204) return null
     if (!response.ok) {
       const detail = await readErrorDetail(response)
       throw new Error(detail || `语音合成失败（HTTP ${response.status}）`)
@@ -161,6 +167,10 @@ export function playTts(text: string, options: PlayTtsOptions = {}): TtsPlayback
   void requestTtsBlob(text, speed)
     .then(async (blob) => {
       if (stopped) return
+      if (!blob) {
+        complete()
+        return
+      }
 
       objectUrl = URL.createObjectURL(blob)
       audio = new Audio(objectUrl)

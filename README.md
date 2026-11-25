@@ -275,7 +275,7 @@ VITE_API_BASE_URL=http://127.0.0.1:8080
 - 后台任务使用 FastAPI `BackgroundTasks`，服务重启会中断正在处理的任务，任务状态可能停留在 `pending`。
 - 直播讲解使用 CosyVoice 真实合成，依赖 `DASHSCOPE_API_KEY` 与对应音色权限；模型与音色在代码中固定为 `cosyvoice-v3-flash` / `longanhuan_v3`，请求里传入其他音色会被忽略。
 - 服务不会再回退到 `cosyvoice-v2` / `longxiaochun_v2`，避免模型与音色不匹配触发 418。
-- 合成前会经 `clean_text_for_tts()` 清洗：剔除 `$$...$$` / `$...$` LaTeX、代码块、Markdown 标记，并丢弃纯 `--`、纯符号和清洗后无文字的行；如果清洗后为空，前端直接显示文字、不再调用 TTS。
+- 合成前会经 `clean_text_for_tts()` 清洗：剔除 `$$...$$` / `$...$` LaTeX、代码块、Markdown 标记，并丢弃纯 `--`、纯符号和清洗后无文字的行；如果清洗后为空或极短，后端返回 `204`，前端直接显示文字、不再调用 TTS，避免 418 中断课堂。
 - 前端使用 react-markdown + remark-gfm + remark-math + rehype-katex 渲染正文与板书，`$...$` / `$$...$$` 会显示为数学公式，GFM 表格会渲染为真正的 HTML 表格。
 - 举手打断依赖浏览器 `webkitSpeechRecognition`，需在 `localhost` 或 HTTPS 环境运行并允许麦克风权限，Chrome / Edge 体验最佳。
 - 「生成讲解视频」按钮为 Seedance 类接口预留位，当前禁用。

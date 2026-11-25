@@ -145,18 +145,18 @@ function ensureMermaid() {
     fontFamily: '"PingFang SC", "Microsoft YaHei", system-ui, sans-serif',
     themeVariables: {
       background: 'transparent',
-      primaryColor: '#132038',
-      primaryTextColor: '#e2e8f0',
-      primaryBorderColor: '#38bdf8',
-      lineColor: '#7dd3fc',
-      secondaryColor: '#0b1729',
-      tertiaryColor: '#0f1c31',
-      mainBkg: '#132038',
-      nodeBorder: '#38bdf8',
-      clusterBkg: '#0b1729',
-      clusterBorder: '#1e3a5f',
-      edgeLabelBackground: '#0b1729',
-      titleColor: '#e2e8f0',
+      primaryColor: '#1a1c20',
+      primaryTextColor: '#e4e4e7',
+      primaryBorderColor: '#4b5563',
+      lineColor: '#6b7280',
+      secondaryColor: '#16181c',
+      tertiaryColor: '#141619',
+      mainBkg: '#1a1c20',
+      nodeBorder: '#4b5563',
+      clusterBkg: '#16181c',
+      clusterBorder: '#2b2f36',
+      edgeLabelBackground: '#16181c',
+      titleColor: '#e4e4e7',
     },
     flowchart: { curve: 'basis', padding: 12 },
     mindmap: { padding: 8 },
@@ -453,37 +453,35 @@ function LectureBoard({
 
   return (
     <div
-      className={`lecture-board overflow-hidden rounded-2xl border transition-all duration-500 ${
-        isActive
-          ? 'lecture-board--active border-sky-400/40'
-          : 'border-white/10'
+      className={`lecture-board overflow-hidden rounded-2xl border transition-colors duration-300 ${
+        isActive ? 'border-white/25' : 'border-white/10'
       }`}
     >
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 bg-white/[0.03] px-4 py-2.5">
-        <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.18em] text-sky-300/80">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 bg-white/[0.02] px-4 py-2.5">
+        <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">
           <span
             className={`h-1.5 w-1.5 rounded-full ${
-              isActive ? 'animate-pulse bg-sky-400' : 'bg-sky-400/50'
+              isActive ? 'animate-pulse bg-slate-200' : 'bg-slate-500'
             }`}
           />
           Board · 动态板书
         </div>
         <div className="flex items-center gap-2">
           {focusLabel && (
-            <span className="max-w-[220px] truncate rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[11px] text-emerald-200">
+            <span className="max-w-[220px] truncate rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[11px] text-slate-300">
               {focusLabel}
             </span>
           )}
           <span className="text-[11px] text-slate-500">
             第 {segmentIndex + 1} 段
           </span>
-          <span className="rounded-full border border-sky-400/30 bg-sky-400/10 px-2 py-0.5 text-[11px] text-sky-200">
+          <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[11px] text-slate-300">
             {badge}
           </span>
         </div>
       </div>
 
-      <div className="board-grid max-h-[560px] min-h-[420px] overflow-auto p-5 lg:p-6">
+      <div className="max-h-[560px] min-h-[420px] overflow-auto p-5 lg:p-6">
         {parsed.kind === 'mermaid' &&
           (svg ? (
             <div
@@ -493,14 +491,14 @@ function LectureBoard({
           ) : (
             <div>
               {renderError ? (
-                <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-xs text-amber-200/90">
-                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />
+                <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-200/15 bg-amber-200/[0.04] px-3 py-2 text-xs text-amber-100/80">
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-200/70" />
                   {renderError}
                 </div>
               ) : (
                 <p className="mb-3 text-xs text-slate-500">正在渲染图表…</p>
               )}
-              <pre className="board-code rounded-xl border border-white/5 bg-black/20 p-3">
+              <pre className="board-code rounded-xl border border-white/10 bg-black/20 p-3">
                 <code
                   dangerouslySetInnerHTML={{
                     __html: highlightMermaidSource(
@@ -526,7 +524,7 @@ function LectureBoard({
                 >
                   <span
                     className={`w-7 shrink-0 select-none text-right ${
-                      isHighlighted ? 'text-sky-300' : 'text-slate-600'
+                      isHighlighted ? 'text-slate-200' : 'text-slate-600'
                     }`}
                   >
                     {index + 1}

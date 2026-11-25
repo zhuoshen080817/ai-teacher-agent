@@ -6,7 +6,11 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from starlette.responses import Response
 
-from app.services.tts_service import get_tts_info, synthesize_speech
+from app.services.tts_service import (
+    get_tts_info,
+    is_tts_text_usable,
+    synthesize_speech,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +40,10 @@ def tts(payload: TtsRequest) -> Response:
             status_code=400,
             detail="语速必须在 0.5 到 2.0 之间",
         )
+
+    # 纯符号 / 极短文本直接跳过合成，前端继续展示文字即可
+    if not is_tts_text_usable(text):
+        return Response(status_code=204)
 
     try:
         audio = synthesize_speech(text, payload.voice, payload.speed)

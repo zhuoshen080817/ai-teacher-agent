@@ -34,6 +34,7 @@ VOICE_DISPLAY_NAMES = {
 
 TTS_FORMAT = AudioFormat.WAV_16000HZ_MONO_16BIT
 TTS_MAX_CHARS = 1000
+TTS_MIN_MEANINGFUL_CHARS = 2
 TTS_CACHE_LIMIT = 40
 TTS_SPEED_MIN = 0.5
 TTS_SPEED_MAX = 2.0
@@ -95,6 +96,17 @@ def clean_text_for_tts(text: str) -> str:
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     cleaned = re.sub(r"\n{2,}", "\n", cleaned)
     return cleaned.strip()
+
+
+def is_tts_text_usable(text: str) -> bool:
+    """清洗后是否仍值得调用 TTS：纯符号或极短文本直接跳过，避免 418。"""
+    normalized = " ".join(clean_text_for_tts(text).split())
+    if not normalized:
+        return False
+    return (
+        len(MEANINGFUL_CHAR_PATTERN.findall(normalized))
+        >= TTS_MIN_MEANINGFUL_CHARS
+    )
 
 
 def _patch_wav_header(audio: bytes) -> bytes:
