@@ -5,9 +5,11 @@ import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from app.services.audio_processing import generate_remedial_segment
 from app.services.chat_service import (
     ask_teacher,
     chat_with_context,
+    companion_chat,
     explain_again,
     quiz_feedback,
     teacher_cue,
@@ -21,6 +23,33 @@ router = APIRouter(tags=["chat"])
 class ChatRequest(BaseModel):
     message: str
     subject: str = "通用课程"
+    note_context: str | None = None
+
+
+class CompanionChatRequest(BaseModel):
+    message: str
+    subject: str = "通用课程"
+    note_context: str | None = None
+    lecture_context: str | None = None
+    history: list[dict[str, str]] | None = None
+    escalate_enabled: bool = True
+
+
+class RemedialRequest(BaseModel):
+    question: str
+    focus: str = ""
+    subject: str = "通用课程"
+    lecture_context: str | None = None
+    note_context: str | None = None
+
+
+class QuizRemedialRequest(BaseModel):
+    question: str
+    options: list[str] = []
+    correct_answer: str = ""
+    chosen_answer: str = ""
+    subject: str = "通用课程"
+    lecture_context: str | None = None
     note_context: str | None = None
 
 
@@ -79,6 +108,117 @@ def chat(payload: ChatRequest) -> dict[str, str]:
         ) from exc
 
     return {"reply": reply}
+
+
+@router.post("/companion_chat")
+def companion_chat_route(payload: CompanionChatRequest) -> dict[str, object]:
+    """左侧伴读小助手：回答基础问题，必要时替学生向主讲老师举手。"""
+    message = payload.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="消息内容不能为空")
+    if len(message) > 2000:
+        raise HTTPException(
+            status_code=400,
+            detail="单条消息不能超过 2000 个字符",
+        )
+
+    try:
+        result = companion_chat(
+            message=message,
+            subject=payload.subject.strip() or "通用课程",
+            note_context=payload.note_context,
+            lecture_context=payload.lecture_context,
+            history=payload.history,
+            escalate_enabled=payload.escalate_enabled,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 伴读服务异常统一返回 502
+        logger.exception("伴读小助手调用失败")
+        raise HTTPException(
+            status_code=502,
+            detail="伴读小助手暂时不可用，请稍后再试",
+        ) from exc
+
+    result["agent"] = "companion"
+    return result
+
+
+@router.post("/teacher_remedial")
+def teacher_remedial_route(payload: RemedialRequest) -> dict[str, str]:
+    """伴读举手后，主讲老师针对薄弱点重新生成一页动态板书与讲解。"""
+    question = payload.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="学生问题不能为空")
+    if len(question) > 2000:
+        raise HTTPException(
+            status_code=400,
+            detail="学生问题不能超过 2000 个字符",
+        )
+
+    try:
+        segment = generate_remedial_segment(
+            question=question,
+            focus=payload.focus.strip(),
+            subject=payload.subject.strip() or "通用课程",
+            lecture_context=(payload.lecture_context or "").strip(),
+            note_context=(payload.note_context or "").strip(),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 补救板书生成异常统一返回 502
+        logger.exception("主讲补救板书生成失败")
+        raise HTTPException(
+            status_code=502,
+            detail="主讲老师暂时无法生成补救板书，请稍后再试",
+        ) from exc
+
+    return {**segment, "agent": "teacher"}
+
+
+@router.post("/quiz_remedial")
+def quiz_remedial_route(payload: QuizRemedialRequest) -> dict[str, str]:
+    """学生答错随堂小测后，主讲老师用更耐心、更拆解的方式重讲。"""
+    question = payload.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="题目不能为空")
+
+    options = [
+        option.strip() for option in payload.options if option.strip()
+    ][:4]
+    option_lines = "\n".join(
+        f"{chr(65 + index)}. {option}"
+        for index, option in enumerate(options)
+    )
+    correct = payload.correct_answer.strip().upper()
+    chosen = payload.chosen_answer.strip().upper()
+    question_text = (
+        f"{question}\n"
+        f"选项：\n{option_lines or '（无）'}\n"
+        f"正确答案：{correct or '未知'}\n"
+        f"学生选择：{chosen or '未作答'}"
+    )
+    focus = f"错题拆解：{question[:60]}"
+
+    try:
+        segment = generate_remedial_segment(
+            question=question_text,
+            focus=focus,
+            subject=payload.subject.strip() or "通用课程",
+            lecture_context=(payload.lecture_context or "").strip(),
+            note_context=(payload.note_context or "").strip(),
+            source="quiz",
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 错题补救生成异常统一返回 502
+        logger.exception("错题补救板书生成失败")
+        raise HTTPException(
+            status_code=502,
+            detail="主讲老师暂时无法生成错题讲解，请稍后再试",
+        ) from exc
+
+    return {**segment, "agent": "teacher"}
 
 
 @router.post("/ask_teacher")

@@ -100,6 +100,7 @@ flowchart LR
 ### 5.2 BackgroundTasks + 前端轮询
 
 - 上传接口立即返回 `task_id`，处理在后台线程中执行；
+- 大文件采用「分片并行上传」：前端按 4MB 切片、默认 4 路并发，失败分片自动重试；后端按 `upload_id` 接收分片、校验总大小并合并，音频/PPT 各自的 finalize 接口创建任务后立即返回；
 - 前端每 2 秒查询一次任务状态，终结后停止轮询；
 - 优点：实现简单、无额外中间件；
 - 局限：服务重启会中断任务，缺少重试、死信与可观测性。
@@ -110,7 +111,7 @@ flowchart LR
 
 当前采用「统一格式 + 分段识别 + 多文件合并」的后端音频管道：
 
-1. **多文件接收**：`POST /api/upload` 接收 `files` 列表，按上传顺序保存，一条 Task 记录通过 `filepaths` 保存全部路径；
+1. **多文件接收**：前端优先走分片接口（`/api/upload/chunk/*` + `/api/upload/finalize`），后端合并后按上传顺序写入一条 Task 的 `filepaths`；旧的 `POST /api/upload` 仍保留为小文件兼容路径；
 2. **转码与切片**：用 `subprocess` 调用 `backend/bin/ffmpeg.exe`，一条命令同时完成转码 **16kHz / 单声道 / 16bit** 与 **5 分钟切片**；
 3. **长音频切片**：按固定 **5 分钟** 切分为 `chunk_000.wav`、`chunk_001.wav` 等，存放在以 `classroom_task_{id}_` 为前缀的临时目录中；
 4. **分段 ASR**：逐段调用 `paraformer-realtime-v2` 的 `recognize_file`，`format` 固定为 `wav`，`sample_rate` 固定为 `16000`；
@@ -141,25 +142,35 @@ flowchart LR
 - 用户在前端填写 `subject`，后端写入 `Task.subject`，Prompt 中的角色、输出类型与术语保留要求均由该值动态生成，不硬编码任何具体学科。
 - 可选择上传 `.pptx`：`python-pptx` 提取每页文本框、表格与备注文字，存入 `Task.ppt_context`。
 - 由于流程是“先 PPT 后音频”，`POST /api/upload_ppt` 会创建一条占位 `Task` 并返回 `task_id`；音频上传携带该 `task_id` 时复用同一条记录，未携带时新建任务（音频-only 场景）。
-- Prompt 采用简单 RAG 注入方式，把 `{subject}`、`{ppt_context}` 与完整 `transcribed_text` 一起提供给 DeepSeek，并要求模型结合 PPT 推断“这里/这个函数”等指代。
-- PPT 只提取文字，不解析图片；超长 PPT 文本会直接进入上下文，后续可按页切片并做检索式注入。
+- Prompt 采用简单 RAG 注入方式，把 `{subject}`、`{ppt_context}`、`{image_context}` 与完整 `transcribed_text` 一起提供给 DeepSeek，并要求模型结合 PPT 与补充图片推断“这里/这个函数”等指代。
+- 补充图片走分片上传：`POST /api/upload_images/finalize` 调用百炼视觉模型（默认 `qwen3-vl-plus`，可用 `VISION_MODEL` 覆盖，失败时回退 `qwen-vl-plus-latest` / `qwen-vl-max-latest`），逐张提取文字、题干与图表描述，按上传顺序拼接为 `Task.image_context`（上限 30000 字符）。
+- `image_context` 会注入复习笔记 Prompt 与分镜 Prompt；分镜 Prompt 要求优先围绕图片中的黑板题、练习题和图表设计讲解，而不是把图片当装饰。
+- PPT 只提取文字，不解析图片；图片由新增的视觉模型链路单独解析。
 
 ### 5.6 对话助手与直播讲解
 
 - 左侧 40% 为智能助手聊天区，右侧 60% 为上传、状态、动态板书画布与历史工作区。
 - 前端不再要求填写课程名称：后端在转写完成后调用 DeepSeek，根据 PPT 大纲（优先）或转写文本自动推断科目，并写回 `Task.subject`，供笔记与分镜 Prompt 使用。
 - `POST /api/chat` 由后端调用 DeepSeek，接收 `message`、`subject` 与可选 `note_context`；当前笔记会作为上下文注入，避免把 API Key 暴露给浏览器。
+- 左侧聊天升级为「伴读小助手」子智能体（`POST /api/companion_chat`）：它只回答基础概念、术语、代码片段和复述类问题，并输出 `action`（`answer` / `escalate`）与 `focus`（薄弱点）。判断为深层原理、证明、易错点或学生明确说「没听懂」时，伴读会主动向主讲李老师举手。
+- 伴读举手后，前端暂停原课堂并调用 `POST /api/teacher_remedial`，由主讲李老师针对 `focus` 重新生成一页 `speech_intro + html_code + animation_trigger` 补救板书；右侧画布显示「伴读向老师举手了」横幅，讲完后学生点「听懂了，回到课堂」恢复到被打断的原分镜。
+- 左侧消息按 `agent` 区分：学生气泡、绿色「伴读小助手」气泡、琥珀色「主讲李老师」气泡，以及居中的系统举手消息；三者的语音播报状态也分别标注。
+- 板书收藏写入 `Task.favorites`（JSON 数组）：每条快照保存 `html_code`、`animation_trigger`、`speech_intro`、标题、来源与时间；前端「我的收藏」弹窗用 `DynamicBoard` 重新执行触发动画，并支持删除与重新播放。演示数据使用 `task_id=0` 的合成 Task 承载收藏。
+- 错题写入 `Task.wrong_questions`（JSON 数组）：答错时前端静默调用 `/api/tasks/{task_id}/wrong_questions`；`POST /api/quiz_remedial` 由主讲老师生成「先安抚、再拆解」的错题板书，讲完后继续下一分镜。
+- 新任务生成分镜前，`_load_recent_weak_points()` 会按科目读取历史错题并注入 Prompt；若与本次内容相关，第一段 `speech_intro` 必须自然复习引入，例如「上次你对递归还有些疑惑，我们今天先把这一块补上」。
 - 长音频切片后使用 `ThreadPoolExecutor` 并发调用 ASR，默认并发 4（`ASR_MAX_WORKERS`），在吞吐与 DashScope 限流之间取平衡；结果按切片原始顺序合并，单段失败仍可跳过。
 - 任务进度写入 `Task.progress`（0-100）与 `Task.status_message`：转码切片、逐段识别、科目识别、笔记生成、讲稿编排各阶段都会更新，前端轮询后渲染真实进度条，避免长音频干等。
-- 分镜脚本采用「启发式步步为营」结构：每个 segment 包含 `board_content`、开场白 `speech_text`，以及 `step_by_step` 数组（每步含 `board_highlight`、`highlight_lines`、`speech_text`），强制老师先出题、再一步步推导，不允许直接罗列答案。
-- 每个 segment 还包含 `quiz`（question / 4 options / correct_answer / explanation_correct / explanation_wrong / explanation_guess），分镜最后一步讲完后前端弹出随堂小测：答对可选「我真懂了」或「我是蒙的」，答错直接进入耐心讲解；解析由 TTS 播报后再进入下一分镜。
+- 分镜脚本采用「启发式步步为营」新结构：每个 segment 包含 `speech_intro`（150-300 字口播）、`html_code`（自包含 HTML+CSS 动态板书）与 `animation_trigger`（触发动画的类名），一段只讲一个推导动作。旧任务的 `board_content + speech_text + step_by_step` 结构仍保留兼容路径，前端按 `html_code` 是否存在自动分流。
+- 动态板书在右侧 sandbox iframe 中渲染：后端 `_sanitize_board_html()` 移除 `<script>`、`on*` 事件与 `javascript:`；iframe 使用 `sandbox="allow-scripts"`（不含 `allow-same-origin`）并注入 CSP，只允许内联样式、内联脚本与 data 图片。后端还会把 `animation_trigger` 收敛为安全类名，并在与 HTML 不一致时自动改用页面里已有的 `.xxx.is-active` 类。
+- 「先说话，后写字」：前端 `playDynamicSegment()` 先 TTS 播放 `speech_intro`，播放结束后延迟 220ms 向 iframe 发送 `postMessage({ type: 'board:play', trigger })`；iframe runtime 给匹配元素逐个添加 `is-active`（同 trigger 多元素按 120ms 依次展开），CSS 使用 transition / animation 写出代码行、箭头与重点。找不到 trigger 或 `.is-active` 样式漏写时，runtime 会自动兜底展开，避免板书空白。
+- 每个 segment 还包含 `quiz`（question / 4 options / correct_answer / explanation_correct / explanation_wrong / explanation_guess），分镜讲完后前端弹出随堂小测：答对可选「我真懂了」或「我是蒙的」，答错直接进入耐心讲解；解析由 TTS 播报后再进入下一分镜。
 - 点击「开始上课」后，在首段 TTS 音频返回前，画板区展示随机轮换的准备旁白（例如「李老师正在翻教案、调麦克风…」）与呼吸灯提示，音频真正开始播放后自动隐藏。
 - 前端直播状态机：`idle → playing → waiting → (playing | explaining | interrupting → listening → thinking → resuming) → paused → ended`。每讲完一步进入 `waiting`，等待学生确认。
 - 互动控制面板提供「听懂了，下一步」「没听懂，再讲讲」和双向语速开关：默认「老师讲慢点」切到 0.8x 后按钮变为「讲快点吧老师」，再点恢复 1.0x；快捷键为 `Enter` / `→`、`R`。切换后会用新语速重播当前步骤，保证立刻生效。
 - 举手打断是全局常驻能力和右下角悬浮按钮：点击后立即停止直播与左侧聊天的所有 TTS，由 `/api/teacher_cue` 现场生成一句问候（每次不同，例如「哟，手举这么高，是不是前面哪儿绕晕了？」）并开启麦克风；无语音输入或麦克风不可用时自动显示文字输入框。
 - 所有 DeepSeek 请求共享 `app/services/persona.py` 中的「李老师」人设：大学金牌讲师，耐心鼓励、幽默爱打比方、允许语气词，并明确要求开场白每次不同、禁止「这个问题问得不错」这类套话；资料生成类请求使用保留人设但允许结构化输出的 `TEACHER_AUTHOR`。
 - `/api/ask_teacher` 先做意图识别，返回 `intent`（`pause` / `slow_down` / `speed_up` / `question`）与现场生成的 `answer`：`pause` 会幽默地让学生快去快回并原地等待；`slow_down` / `speed_up` 会答应调整节奏；`question` 会先判断问题类型——基础概念或理解偏差用「这里可能有个小误区」温和纠正，只有真正有深度的问题才肯定「这个问题很有深度」，随后给出结论或类比；`question` 回答后再由 `/api/teacher_cue` 生成一句「要继续刚才的内容吗？」的变体。对话类 temperature 统一在 0.85~1.15，保证开场白多样。
-- 分镜 Prompt 强制每个分镜的第一句是自然过渡且句式互不重复，明确禁止「先别急着记结论」「先看这张结构图」这类模板句；前端不插入任何讲解首句，lecture 的第一句话完全来自后端返回的 `storyboard[].speech_text`。
+- 分镜 Prompt 强制每个分镜的 `speech_intro` 是自然过渡且句式互不重复，明确禁止「先别急着记结论」「先看这张结构图」这类模板句；前端不插入任何讲解首句，第一句话完全来自后端返回的 `storyboard[].speech_intro`（旧结构为 `speech_text`）。
 - 随堂小测反馈不再使用分镜里预生成的固定解释：前端把题目、选项、正确答案、学生选择与 `kind` 发给 `/api/quiz_feedback`，由大模型现场生成夸张表扬、情绪安慰或幽默调侃；只有调用失败时才回退到分镜里的兜底文案。
 - 前端只保留必要的状态旁白（准备、思考、聆听、结束等），统一放在 `frontend/src/lib/teacherLines.ts` 的文案库里随机轮换，不再出现固定的「老师正在思考」式机械提示；所有对话内容均由大模型生成。
 - 左侧聊天回答在文字返回后自动调用 `/api/tts` 播报，气泡内显示小喇叭与「老师正在语音解答…」；若直播正在播放，会先暂停直播并记录恢复点，避免两个声音重叠。

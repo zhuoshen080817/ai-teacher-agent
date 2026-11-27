@@ -69,8 +69,8 @@ flowchart LR
 11. 更新数据库：成功写入 `completed + result`，全部为空或异常写入 `failed + 错误信息`。
 12. 前端每 2 秒轮询 `GET /api/task/{task_id}`，任务终结后停止轮询并展示结果。
 13. 前端通过 `GET /api/tasks` 获取历史任务列表，点击后拉取对应任务详情。
-14. 左侧聊天发送消息时调用 `POST /api/chat`，后端把 `subject` 与当前笔记作为上下文交给 DeepSeek。
-15. 右侧直播画布按分镜播放 CosyVoice 音频（`POST /api/tts`），同步切换并高亮 Mermaid / 代码 / 大字要点；点击「举手打断」或按空格暂停音频，进入语音问答流程，回答播报后重播被打断的分镜。
+14. 左侧聊天由「伴读小助手」子智能体处理：调用 `POST /api/companion_chat`，后端把当前讲解上下文、笔记与最近对话交给 DeepSeek，返回基础答疑或升级指令；升级时前端调用 `POST /api/teacher_remedial`，由主讲李老师生成补救板书并暂停原课堂。
+15. 右侧直播画布按分镜播放 CosyVoice 音频（`POST /api/tts`）：新分镜先播 `speech_intro`，再在 sandbox iframe 中触发 `html_code` 的 CSS 动画完成动态板书；旧分镜继续同步切换并高亮 Mermaid / 代码 / 大字要点。点击「举手打断」或按空格暂停音频，进入语音问答流程，回答播报后重播被打断的分镜。
 
 ## 部署与边界
 

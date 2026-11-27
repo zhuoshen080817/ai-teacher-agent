@@ -22,6 +22,7 @@ class Task(Base):
         server_default="通用课程",
     )
     ppt_context: Mapped[str | None] = mapped_column(Text, nullable=True)
+    image_context: Mapped[str | None] = mapped_column(Text, nullable=True)
     storyboard: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="pending", server_default="pending"
@@ -33,6 +34,8 @@ class Task(Base):
         String(255), nullable=True
     )
     result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    favorites: Mapped[str | None] = mapped_column(Text, nullable=True)
+    wrong_questions: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

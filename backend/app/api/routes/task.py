@@ -81,7 +81,10 @@ def list_tasks(
 ) -> list[dict[str, object]]:
     """按创建时间倒序返回最近的任务，用于前端历史记录。"""
     tasks = db.scalars(
-        select(Task).order_by(Task.id.desc()).limit(limit)
+        select(Task)
+        .where(Task.id > 0)
+        .order_by(Task.id.desc())
+        .limit(limit)
     ).all()
 
     return [

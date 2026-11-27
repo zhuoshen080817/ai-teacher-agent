@@ -15,7 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.api import api_router
 from app.config import settings
-from app.database import Base, engine
+from app.database import Base, engine, ensure_task_columns
 from app import models  # noqa: F401  确保模型已注册到 Base.metadata
 
 logging.basicConfig(
@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
+    ensure_task_columns()
     yield
 
 

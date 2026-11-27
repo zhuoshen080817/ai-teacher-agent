@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import LectureBoard from './components/LectureBoard'
+import DynamicBoard from './components/DynamicBoard'
 import MarkdownView from './components/MarkdownView'
 import {
   EXPLAINING_LINES,
@@ -21,7 +22,7 @@ import {
 } from './lib/teacherLines'
 import { playTts, prefetchTts, setTtsSpeed } from './lib/tts'
 import type { TtsPlayback } from './lib/tts'
-import { uploadFormData } from './lib/upload'
+import { uploadApiJson, uploadFilesInChunks } from './lib/upload'
 import type { UploadProgress } from './lib/upload'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8080'
@@ -31,6 +32,9 @@ const LARGE_FILE_WARNING_SIZE = 500 * 1024 * 1024
 const LARGE_FILE_WARNING =
   '文件过大处理缓慢，建议先转为 MP3 格式以提升速度。'
 const ALLOWED_AUDIO_EXTENSIONS = ['mp3', 'wav', 'm4a']
+const ALLOWED_IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif']
+const MAX_IMAGE_SIZE = 20 * 1024 * 1024
+const MAX_IMAGE_COUNT = 12
 const POLL_INTERVAL = 2000
 const RECOGNITION_TIMEOUT = 18000
 
@@ -51,11 +55,26 @@ type LiveState =
   | 'resuming'
   | 'ended'
 type ChatRole = 'user' | 'assistant'
+type ChatAgent = 'companion' | 'teacher' | 'system'
+type RemedialMode = 'companion' | 'quiz'
 
 interface ChatMessage {
   id: string
   role: ChatRole
+  agent: ChatAgent
   content: string
+}
+
+interface RemedialSegment {
+  speech_intro: string
+  html_code: string
+  animation_trigger: string
+}
+
+interface SelectedImage {
+  key: string
+  file: File
+  url: string
 }
 
 interface StoryboardStep {
@@ -75,6 +94,10 @@ interface StoryboardQuiz {
 
 interface StoryboardSegment {
   segment_id: number
+  speech_intro: string
+  html_code: string
+  animation_trigger: string
+  // 旧分镜兼容字段
   speech_text: string
   board_content: string
   highlight_lines: number[]
@@ -92,8 +115,42 @@ interface UploadResponse {
   detail?: string
 }
 
-interface ChatResponse {
+interface CompanionChatResponse {
+  agent?: string
+  action?: 'answer' | 'escalate'
   reply?: string
+  focus?: string
+  reason?: string
+  detail?: string
+}
+
+interface RemedialResponse {
+  agent?: string
+  speech_intro?: string
+  html_code?: string
+  animation_trigger?: string
+  detail?: string
+}
+
+interface FavoriteItem {
+  favorite_id: string
+  task_id: number
+  filename?: string
+  segment_id: number
+  title: string
+  subject: string
+  speech_intro: string
+  html_code: string
+  animation_trigger: string
+  board_content: string
+  source: string
+  saved_at: string
+}
+
+interface FavoriteCreateResponse {
+  favorite?: FavoriteItem
+  count?: number
+  task_id?: number
   detail?: string
 }
 
@@ -179,6 +236,16 @@ function formatFileSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function formatSpeed(bytesPerSecond: number) {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) {
+    return '计算中'
+  }
+  if (bytesPerSecond >= 1024 * 1024) {
+    return `${(bytesPerSecond / (1024 * 1024)).toFixed(1)} MB/s`
+  }
+  return `${Math.max(1, Math.round(bytesPerSecond / 1024))} KB/s`
+}
+
 function formatDateTime(value: string) {
   if (!value) return '未知时间'
   return value.replace('T', ' ').slice(0, 16)
@@ -228,6 +295,17 @@ function toSpeechText(markdown: string) {
     .replace(/[>#*_]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+/** 从动态板书 HTML 中抽取纯文本，供「没听懂」重新讲解使用。 */
+function htmlToPlainText(html: string) {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 1500)
 }
 
 function normalizeHighlightLines(value: unknown): number[] {
@@ -313,6 +391,12 @@ function normalizeQuiz(value: unknown): StoryboardQuiz | null {
   }
 }
 
+function normalizeTrigger(value: unknown) {
+  if (typeof value !== 'string') return 'reveal-1'
+  const cleaned = value.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 60)
+  return cleaned || 'reveal-1'
+}
+
 function normalizeStoryboard(value: unknown): StoryboardSegment[] {
   if (!Array.isArray(value)) return []
 
@@ -322,6 +406,29 @@ function normalizeStoryboard(value: unknown): StoryboardSegment[] {
     if (typeof item !== 'object' || item === null) continue
 
     const record = item as Record<string, unknown>
+    const speechIntro =
+      typeof record.speech_intro === 'string'
+        ? record.speech_intro.trim()
+        : ''
+    const htmlCode =
+      typeof record.html_code === 'string' ? record.html_code.trim() : ''
+
+    if (speechIntro && htmlCode) {
+      segments.push({
+        segment_id: segments.length + 1,
+        speech_intro: speechIntro,
+        html_code: htmlCode,
+        animation_trigger: normalizeTrigger(record.animation_trigger),
+        speech_text: '',
+        board_content: '',
+        highlight_lines: [],
+        step_by_step: [],
+        quiz: normalizeQuiz(record.quiz),
+      })
+      if (segments.length >= 30) break
+      continue
+    }
+
     const boardContent =
       typeof record.board_content === 'string'
         ? record.board_content.trim()
@@ -333,6 +440,9 @@ function normalizeStoryboard(value: unknown): StoryboardSegment[] {
     if (steps.length > 0) {
       segments.push({
         segment_id: segments.length + 1,
+        speech_intro: '',
+        html_code: '',
+        animation_trigger: '',
         speech_text: opening,
         board_content: boardContent,
         highlight_lines: normalizeHighlightLines(record.highlight_lines),
@@ -343,6 +453,9 @@ function normalizeStoryboard(value: unknown): StoryboardSegment[] {
       // 兼容旧格式：没有 step_by_step 时把原讲稿作为唯一一步
       segments.push({
         segment_id: segments.length + 1,
+        speech_intro: '',
+        html_code: '',
+        animation_trigger: '',
         speech_text: '',
         board_content: boardContent,
         highlight_lines: normalizeHighlightLines(record.highlight_lines),
@@ -376,6 +489,9 @@ function buildFallbackStoryboard(markdown: string): StoryboardSegment[] {
 
       segments.push({
         segment_id: segments.length + 1,
+        speech_intro: '',
+        html_code: '',
+        animation_trigger: '',
         speech_text: '',
         board_content: segment,
         highlight_lines: [],
@@ -435,13 +551,16 @@ function App() {
   const [subject, setSubject] = useState('')
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [selectedPpt, setSelectedPpt] = useState<File | null>(null)
+  const [selectedImages, setSelectedImages] = useState<SelectedImage[]>([])
   const [pptTaskId, setPptTaskId] = useState<number | null>(null)
   const [batchCount, setBatchCount] = useState(0)
   const [taskId, setTaskId] = useState<number | null>(null)
   const [result, setResult] = useState('')
   const [uploadMessage, setUploadMessage] = useState('')
   const [copyState, setCopyState] = useState<CopyState>('idle')
-  const [uploadStage, setUploadStage] = useState<'ppt' | 'audio' | null>(null)
+  const [uploadStage, setUploadStage] = useState<
+    'ppt' | 'image' | 'audio' | null
+  >(null)
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(
     null,
   )
@@ -465,12 +584,36 @@ function App() {
     {
       id: 'welcome',
       role: 'assistant',
+      agent: 'companion',
       content:
-        '你好！我是你的课堂学习助手。上传录音后，我会帮你生成复习笔记；你也可以随时问我笔记中的概念。',
+        '你好，我是伴读小助手。基础概念、刚才没听清的句子都可以先问我；遇到绕不过去的难点，我会替你把问题举手递给李老师。',
     },
   ])
   const [chatInput, setChatInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
+  const [isEscalating, setIsEscalating] = useState(false)
+  const [companionRaised, setCompanionRaised] = useState(false)
+  const [companionFocus, setCompanionFocus] = useState('')
+  const [remedialBoard, setRemedialBoard] = useState<RemedialSegment | null>(
+    null,
+  )
+  const [remedialActive, setRemedialActive] = useState(false)
+  const [remedialKey, setRemedialKey] = useState(0)
+  const [remedialMode, setRemedialMode] =
+    useState<RemedialMode>('companion')
+  const [favorites, setFavorites] = useState<FavoriteItem[]>([])
+  const [favoritesOpen, setFavoritesOpen] = useState(false)
+  const [favoritesLoading, setFavoritesLoading] = useState(false)
+  const [favoritesError, setFavoritesError] = useState('')
+  const [favoriteSaving, setFavoriteSaving] = useState(false)
+  const [favoriteSaved, setFavoriteSaved] = useState(false)
+  const [replayFavorite, setReplayFavorite] =
+    useState<FavoriteItem | null>(null)
+  const [replayRun, setReplayRun] = useState(0)
+  const [replayTrigger, setReplayTrigger] = useState<{
+    key: number
+    trigger: string
+  } | null>(null)
 
   const [storyboard, setStoryboard] = useState<StoryboardSegment[]>([])
   const [liveIndex, setLiveIndex] = useState(0)
@@ -480,6 +623,10 @@ function App() {
   const [liveError, setLiveError] = useState('')
   const [liveFocus, setLiveFocus] = useState('')
   const [liveHighlightLines, setLiveHighlightLines] = useState<number[]>([])
+  const [boardTrigger, setBoardTrigger] = useState<{
+    key: number
+    trigger: string
+  } | null>(null)
   const [isPreparing, setIsPreparing] = useState(false)
   const [prepareLine, setPrepareLine] = useState('')
   const [quizChoice, setQuizChoice] = useState<string | null>(null)
@@ -488,9 +635,19 @@ function App() {
   )
   const [referenceAudio, setReferenceAudio] = useState<File | null>(null)
   const [largeFileHint, setLargeFileHint] = useState('')
-  const [dragTarget, setDragTarget] = useState<'ppt' | 'audio' | null>(null)
+  const [dragTarget, setDragTarget] = useState<
+    'ppt' | 'image' | 'audio' | null
+  >(null)
 
   const chatScrollRef = useRef<HTMLDivElement>(null)
+  const imageUrlsRef = useRef<string[]>([])
+
+  useEffect(() => {
+    return () => {
+      imageUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
+      imageUrlsRef.current = []
+    }
+  }, [])
   const liveSessionRef = useRef(0)
   const livePlaybackRef = useRef<TtsPlayback | null>(null)
   const liveIndexRef = useRef(0)
@@ -498,7 +655,18 @@ function App() {
   const prepareStartedAtRef = useRef(0)
   const chatPlaybackRef = useRef<TtsPlayback | null>(null)
   const ttsSpeedRef = useRef(1)
-  const resumePointRef = useRef<{ index: number; step: number } | null>(null)
+  const resumePointRef = useRef<{
+    index: number
+    step: number
+    remedial?: boolean
+  } | null>(null)
+  const remedialRef = useRef<RemedialSegment | null>(null)
+  const remedialResumeRef = useRef<{
+    index: number
+    step: number
+  } | null>(null)
+  const remedialModeRef = useRef<RemedialMode>('companion')
+  const quizNextIndexRef = useRef<number | null>(null)
   const interruptContextRef = useRef('')
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
 
@@ -513,8 +681,20 @@ function App() {
     liveStepIndex >= 0
       ? activeLiveSegment?.step_by_step[liveStepIndex]
       : undefined
-  const totalSteps = activeLiveSegment?.step_by_step.length ?? 0
-  const activeQuiz = activeLiveSegment?.quiz ?? null
+  const totalSteps =
+    remedialActive
+      ? 1
+      : activeLiveSegment?.html_code
+        ? 1
+        : (activeLiveSegment?.step_by_step.length ?? 0)
+  const activeQuiz = remedialActive
+    ? null
+    : (activeLiveSegment?.quiz ?? null)
+  const canFavorite = Boolean(
+    remedialActive
+      ? remedialBoard?.html_code
+      : activeLiveSegment?.html_code,
+  )
   const isLiveBusy =
     liveState === 'playing' ||
     liveState === 'quiz-feedback' ||
@@ -617,9 +797,16 @@ function App() {
     void loadHistory()
   }, [])
 
-  function appendMessage(role: ChatRole, content: string) {
+  function appendMessage(
+    role: ChatRole,
+    content: string,
+    agent: ChatAgent = 'companion',
+  ) {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    setMessages((previous) => [...previous, { id, role, content }])
+    setMessages((previous) => [
+      ...previous,
+      { id, role, agent, content },
+    ])
     return id
   }
 
@@ -643,13 +830,20 @@ function App() {
   async function speakChatReply(text: string, messageId: string) {
     if (!text.trim()) return
 
-    if (livePlaybackRef.current) {
+    const shouldPauseLive =
+      Boolean(livePlaybackRef.current) ||
+      liveState === 'playing' ||
+      liveState === 'explaining' ||
+      liveState === 'resuming'
+
+    if (shouldPauseLive) {
       resumePointRef.current = {
         index: liveIndexRef.current,
         step: liveStepRef.current,
+        remedial: remedialActive,
       }
       liveSessionRef.current += 1
-      livePlaybackRef.current.stop()
+      livePlaybackRef.current?.stop()
       livePlaybackRef.current = null
       setLiveState('paused')
     }
@@ -769,14 +963,14 @@ function App() {
           setLiveIndex(0)
           setPhase('completed')
           resetLiveSession(0)
-          appendMessage('assistant', pickLine(READY_LINES))
+          appendMessage('assistant', pickLine(READY_LINES), 'system')
           void loadHistory()
         } else if (data.status === 'failed') {
           clearInterval(timer)
           setUploadMessage(data.result ?? '音频处理失败，请重新上传')
           setPhase('failed')
           resetLiveSession(0)
-          appendMessage('assistant', pickLine(FAILED_LINES))
+          appendMessage('assistant', pickLine(FAILED_LINES), 'system')
           void loadHistory()
         }
       } catch (error) {
@@ -816,6 +1010,15 @@ function App() {
     setIsPreparing(false)
     setQuizChoice(null)
     setQuizVerdict(null)
+    remedialRef.current = null
+    remedialResumeRef.current = null
+    remedialModeRef.current = 'companion'
+    quizNextIndexRef.current = null
+    setRemedialMode('companion')
+    setRemedialBoard(null)
+    setRemedialActive(false)
+    setCompanionRaised(false)
+    setCompanionFocus('')
     setLivePosition(nextIndex, -1)
   }
 
@@ -826,6 +1029,16 @@ function App() {
     recognitionRef.current?.abort()
     recognitionRef.current = null
     setIsPreparing(false)
+    setBoardTrigger(null)
+    remedialRef.current = null
+    remedialResumeRef.current = null
+    remedialModeRef.current = 'companion'
+    quizNextIndexRef.current = null
+    setRemedialMode('companion')
+    setRemedialBoard(null)
+    setRemedialActive(false)
+    setCompanionRaised(false)
+    setCompanionFocus('')
     setLiveState('idle')
   }
 
@@ -856,6 +1069,571 @@ function App() {
     }
   }
 
+  async function playDynamicSegment(
+    segmentIndex: number,
+    session: number,
+  ) {
+    if (liveSessionRef.current !== session) return
+
+    const segment = liveStoryboard[segmentIndex]
+    if (!segment) {
+      setLiveState('ended')
+      return
+    }
+
+    setLivePosition(segmentIndex, 0)
+    setLiveFocus('')
+    setLiveHighlightLines([])
+    setLiveError('')
+    setBoardTrigger(null)
+
+    try {
+      await speakWithTts(segment.speech_intro, session)
+    } catch (error) {
+      if (liveSessionRef.current !== session) return
+      setLiveError(
+        error instanceof Error ? error.message : '语音播放失败',
+      )
+      setLiveState('idle')
+      appendMessage('assistant', pickLine(TTS_ERROR_LINES), 'system')
+      return
+    }
+
+    if (liveSessionRef.current !== session) return
+
+    // 先说话，后写字：语音播完后再触发 iframe 内的 CSS 动画
+    window.setTimeout(() => {
+      if (liveSessionRef.current !== session) return
+      if (liveIndexRef.current !== segmentIndex) return
+      setBoardTrigger({
+        key: Date.now(),
+        trigger: segment.animation_trigger || 'reveal-1',
+      })
+    }, 220)
+
+    if (segment.quiz) {
+      prefetchTts(segment.quiz.explanation_correct)
+      prefetchTts(segment.quiz.explanation_wrong)
+      prefetchTts(segment.quiz.explanation_guess)
+      // 留出板书动画时间，再弹出随堂小测
+      window.setTimeout(() => {
+        if (liveSessionRef.current !== session) return
+        if (liveIndexRef.current !== segmentIndex) return
+        setQuizChoice(null)
+        setQuizVerdict(null)
+        setLiveState('quiz')
+      }, 2400)
+      return
+    }
+
+    // 等板书逐行“写”完，再允许学生点“听懂了”，避免讲到一半就跳走
+    window.setTimeout(() => {
+      if (liveSessionRef.current !== session) return
+      if (liveIndexRef.current !== segmentIndex) return
+      setLiveState('waiting')
+    }, 1600)
+  }
+
+  function buildLectureContext() {
+    if (remedialActive && remedialRef.current) {
+      return (
+        `${remedialRef.current.speech_intro}\n` +
+        `补充板书要点：${htmlToPlainText(
+          remedialRef.current.html_code,
+        ).slice(0, 1000)}`
+      )
+    }
+
+    const segment = liveStoryboard[liveIndexRef.current]
+    if (!segment) return ''
+
+    if (segment.html_code) {
+      return (
+        `${segment.speech_intro}\n` +
+        `板书要点：${htmlToPlainText(segment.html_code).slice(0, 1000)}`
+      )
+    }
+
+    const step = segment.step_by_step[liveStepRef.current]
+    const speech = step?.speech_text || segment.speech_text
+    return `${speech}\n板书要点：${segment.board_content.slice(0, 1000)}`
+  }
+
+  function currentBoardSnapshot() {
+    if (remedialActive && remedialBoard) {
+      return {
+        segment_id: liveIndexRef.current + 1,
+        title: `补救：${companionFocus || '薄弱点'}`,
+        speech_intro: remedialBoard.speech_intro,
+        html_code: remedialBoard.html_code,
+        animation_trigger: remedialBoard.animation_trigger,
+        board_content: '',
+        source: remedialMode === 'quiz' ? 'quiz' : 'remedial',
+      }
+    }
+
+    const segment = liveStoryboard[liveIndexRef.current]
+    if (!segment?.html_code) return null
+
+    const title =
+      liveFocus ||
+      htmlToPlainText(segment.html_code).slice(0, 24) ||
+      `第 ${liveIndexRef.current + 1} 段板书`
+
+    return {
+      segment_id: liveIndexRef.current + 1,
+      title,
+      speech_intro: segment.speech_intro,
+      html_code: segment.html_code,
+      animation_trigger: segment.animation_trigger,
+      board_content: '',
+      source: 'segment',
+    }
+  }
+
+  async function saveCurrentBoard() {
+    const snapshot = currentBoardSnapshot()
+    if (!snapshot || favoriteSaving) return
+
+    setFavoriteSaving(true)
+    setLiveError('')
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/tasks/${taskId ?? 0}/favorites`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...snapshot,
+            subject: subject.trim() || '通用课程',
+          }),
+        },
+      )
+      const data = (await response.json()) as FavoriteCreateResponse
+      if (!response.ok) {
+        throw new Error(data.detail ?? `HTTP ${response.status}`)
+      }
+      setFavoriteSaved(true)
+      window.setTimeout(() => setFavoriteSaved(false), 2000)
+    } catch (error) {
+      setLiveError(
+        `收藏失败：${
+          error instanceof Error ? error.message : '未知错误'
+        }`,
+      )
+    } finally {
+      setFavoriteSaving(false)
+    }
+  }
+
+  function chooseFavorite(item: FavoriteItem) {
+    setReplayFavorite(item)
+    setReplayRun((previous) => previous + 1)
+    setReplayTrigger({
+      key: Date.now(),
+      trigger: item.animation_trigger || 'reveal-1',
+    })
+  }
+
+  async function openFavorites() {
+    setFavoritesOpen(true)
+    setFavoritesLoading(true)
+    setFavoritesError('')
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/favorites`)
+      const data = (await response.json()) as
+        | FavoriteItem[]
+        | { detail?: string }
+      if (!response.ok) {
+        throw new Error(
+          'detail' in data
+            ? (data.detail ?? `HTTP ${response.status}`)
+            : `HTTP ${response.status}`,
+        )
+      }
+      if (!Array.isArray(data)) {
+        throw new Error('收藏接口返回格式不正确')
+      }
+      setFavorites(data)
+      if (data.length > 0) {
+        chooseFavorite(data[0])
+      } else {
+        setReplayFavorite(null)
+        setReplayTrigger(null)
+      }
+    } catch (error) {
+      setFavoritesError(
+        error instanceof Error ? error.message : '收藏加载失败',
+      )
+    } finally {
+      setFavoritesLoading(false)
+    }
+  }
+
+  async function removeFavorite(favoriteId: string) {
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/favorites/${favoriteId}`,
+        { method: 'DELETE' },
+      )
+      if (!response.ok) {
+        const data = (await response.json()) as { detail?: string }
+        throw new Error(data.detail ?? `HTTP ${response.status}`)
+      }
+
+      const remaining = favorites.filter(
+        (item) => item.favorite_id !== favoriteId,
+      )
+      setFavorites(remaining)
+
+      if (replayFavorite?.favorite_id === favoriteId) {
+        if (remaining.length > 0) {
+          chooseFavorite(remaining[0])
+        } else {
+          setReplayFavorite(null)
+          setReplayTrigger(null)
+        }
+      }
+    } catch (error) {
+      setFavoritesError(
+        error instanceof Error ? error.message : '删除收藏失败',
+      )
+    }
+  }
+
+  function replayFavoriteAgain() {
+    if (!replayFavorite) return
+    setReplayRun((previous) => previous + 1)
+    setReplayTrigger({
+      key: Date.now(),
+      trigger: replayFavorite.animation_trigger || 'reveal-1',
+    })
+  }
+
+  async function playRemedialSegment(
+    segment: RemedialSegment,
+    session: number,
+  ) {
+    if (liveSessionRef.current !== session) return
+
+    setLivePosition(liveIndexRef.current, 0)
+    setLiveFocus('')
+    setLiveHighlightLines([])
+    setLiveError('')
+    setBoardTrigger(null)
+    setLiveState('playing')
+
+    try {
+      await speakWithTts(segment.speech_intro, session)
+    } catch (error) {
+      if (liveSessionRef.current !== session) return
+      setLiveError(
+        error instanceof Error ? error.message : '语音播放失败',
+      )
+    }
+
+    if (liveSessionRef.current !== session) return
+
+    window.setTimeout(() => {
+      if (liveSessionRef.current !== session) return
+      setBoardTrigger({
+        key: Date.now(),
+        trigger: segment.animation_trigger || 'reveal-1',
+      })
+    }, 220)
+
+    window.setTimeout(() => {
+      if (liveSessionRef.current !== session) return
+      setLiveState('waiting')
+    }, 1600)
+  }
+
+  /** 伴读举手：暂停原课堂，请主讲李老师针对薄弱点重新生成一页板书。 */
+  async function startRemedial(question: string, focus: string) {
+    if (!liveStoryboard.length) {
+      appendMessage(
+        'assistant',
+        '我先把这个问题记下来。等课程开始后，我再替你把问题举手递给李老师。',
+        'companion',
+      )
+      return
+    }
+
+    const classWasActive =
+      liveState !== 'idle' && liveState !== 'ended'
+    remedialModeRef.current = 'companion'
+    setRemedialMode('companion')
+    quizNextIndexRef.current = null
+    if (!remedialActive && classWasActive) {
+      remedialResumeRef.current = {
+        index: liveIndexRef.current,
+        step: liveStepRef.current,
+      }
+    }
+
+    const session = liveSessionRef.current + 1
+    liveSessionRef.current = session
+    livePlaybackRef.current?.stop()
+    livePlaybackRef.current = null
+    chatPlaybackRef.current?.stop()
+    chatPlaybackRef.current = null
+    setSpeakingMessageId(null)
+
+    setCompanionRaised(true)
+    setCompanionFocus(focus)
+    setLiveError('')
+    setQuizChoice(null)
+    setQuizVerdict(null)
+    setBoardTrigger(null)
+    setLiveState('playing')
+    setPrepareLine('李老师收到了伴读的举手，正在针对你的薄弱点重新备课…')
+    prepareStartedAtRef.current = Date.now()
+    setIsPreparing(true)
+    setIsEscalating(true)
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/teacher_remedial`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question,
+          focus,
+          subject: subject.trim() || '通用课程',
+          lecture_context: buildLectureContext(),
+          note_context: result || null,
+        }),
+      })
+
+      const data = (await response.json()) as RemedialResponse
+      if (!response.ok) {
+        throw new Error(data.detail ?? `HTTP ${response.status}`)
+      }
+      if (
+        typeof data.speech_intro !== 'string' ||
+        !data.speech_intro.trim() ||
+        typeof data.html_code !== 'string' ||
+        !data.html_code.trim()
+      ) {
+        throw new Error('主讲老师返回的补救板书为空')
+      }
+
+      if (liveSessionRef.current !== session) return
+
+      const segment: RemedialSegment = {
+        speech_intro: data.speech_intro.trim(),
+        html_code: data.html_code,
+        animation_trigger:
+          typeof data.animation_trigger === 'string' &&
+          data.animation_trigger.trim()
+            ? data.animation_trigger.trim()
+            : 'reveal-1',
+      }
+
+      remedialRef.current = segment
+      setRemedialBoard(segment)
+      setRemedialActive(true)
+      setRemedialKey((previous) => previous + 1)
+      const teacherMessageId = appendMessage(
+        'assistant',
+        segment.speech_intro,
+        'teacher',
+      )
+      setSpeakingMessageId(teacherMessageId)
+
+      await playRemedialSegment(segment, session)
+    } catch (error) {
+      if (liveSessionRef.current !== session) return
+
+      const message =
+        error instanceof Error ? error.message : '补救讲解生成失败'
+      setCompanionRaised(false)
+      setLiveError(message)
+      appendMessage(
+        'assistant',
+        `李老师这边暂时没能生成补救板书：${message}`,
+        'system',
+      )
+
+      const point = remedialResumeRef.current
+      if (point) {
+        resumePointRef.current = { ...point }
+        setLiveState('paused')
+      } else {
+        setLiveState('idle')
+      }
+    } finally {
+      setIsEscalating(false)
+      setIsPreparing(false)
+      setSpeakingMessageId(null)
+    }
+  }
+
+  /** 答错后：请主讲老师用更耐心、更拆解的方式重讲这道题。 */
+  async function startQuizRemedial(
+    segmentIndex: number,
+    quiz: StoryboardQuiz,
+    chosen: string,
+    session: number,
+  ) {
+    if (liveSessionRef.current !== session) return
+
+    quizNextIndexRef.current =
+      segmentIndex + 1 < liveStoryboard.length
+        ? segmentIndex + 1
+        : null
+    remedialModeRef.current = 'quiz'
+    setRemedialMode('quiz')
+    setCompanionRaised(true)
+    setCompanionFocus(`错题：${quiz.question.slice(0, 36)}`)
+    setLiveError('')
+    setBoardTrigger(null)
+    setLiveState('playing')
+    setPrepareLine('这道题错了没关系，李老师正在把它拆成更小的步骤…')
+    prepareStartedAtRef.current = Date.now()
+    setIsPreparing(true)
+    setIsEscalating(true)
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/quiz_remedial`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: quiz.question,
+          options: quiz.options,
+          correct_answer: quiz.correct_answer,
+          chosen_answer: chosen,
+          subject: subject.trim() || '通用课程',
+          lecture_context: buildLectureContext(),
+          note_context: result || null,
+        }),
+      })
+
+      const data = (await response.json()) as RemedialResponse
+      if (!response.ok) {
+        throw new Error(data.detail ?? `HTTP ${response.status}`)
+      }
+      if (
+        typeof data.speech_intro !== 'string' ||
+        !data.speech_intro.trim() ||
+        typeof data.html_code !== 'string' ||
+        !data.html_code.trim()
+      ) {
+        throw new Error('错题讲解板书为空')
+      }
+
+      if (liveSessionRef.current !== session) return
+
+      const remedial: RemedialSegment = {
+        speech_intro: data.speech_intro.trim(),
+        html_code: data.html_code,
+        animation_trigger:
+          typeof data.animation_trigger === 'string' &&
+          data.animation_trigger.trim()
+            ? data.animation_trigger.trim()
+            : 'reveal-1',
+      }
+
+      remedialRef.current = remedial
+      setRemedialBoard(remedial)
+      setRemedialActive(true)
+      setRemedialKey((previous) => previous + 1)
+      const teacherMessageId = appendMessage(
+        'assistant',
+        remedial.speech_intro,
+        'teacher',
+      )
+      setSpeakingMessageId(teacherMessageId)
+
+      await playRemedialSegment(remedial, session)
+    } catch (error) {
+      if (liveSessionRef.current !== session) return
+
+      const message =
+        error instanceof Error ? error.message : '错题讲解生成失败'
+      setCompanionRaised(false)
+      setLiveError(message)
+      appendMessage(
+        'assistant',
+        `李老师这边暂时没能拆解这道错题：${message}`,
+        'system',
+      )
+      remedialModeRef.current = 'companion'
+      setRemedialMode('companion')
+      quizNextIndexRef.current = null
+      advanceAfterQuiz(segmentIndex, session)
+    } finally {
+      setIsEscalating(false)
+      setIsPreparing(false)
+      setSpeakingMessageId(null)
+    }
+  }
+
+  /** 补救讲解结束：错题模式继续下一段，伴读模式回到原课堂位置。 */
+  function finishRemedial() {
+    const point = remedialResumeRef.current
+    const mode = remedialModeRef.current
+    const quizNext = quizNextIndexRef.current
+    remedialResumeRef.current = null
+    remedialRef.current = null
+    remedialModeRef.current = 'companion'
+    quizNextIndexRef.current = null
+    setRemedialMode('companion')
+    setRemedialBoard(null)
+    setRemedialActive(false)
+    setCompanionRaised(false)
+    setCompanionFocus('')
+    setBoardTrigger(null)
+    setQuizChoice(null)
+    setQuizVerdict(null)
+
+    if (mode === 'quiz') {
+      if (
+        quizNext !== null &&
+        quizNext >= 0 &&
+        quizNext < liveStoryboard.length
+      ) {
+        const session = liveSessionRef.current + 1
+        liveSessionRef.current = session
+        appendMessage(
+          'assistant',
+          '这道错题讲完了，我们继续下一段。',
+          'system',
+        )
+        setLiveState('playing')
+        void playSegmentIntro(quizNext, session)
+      } else {
+        setLiveState('ended')
+        appendMessage('assistant', pickLine(FINISHED_LINES), 'system')
+      }
+      return
+    }
+
+    if (!point) {
+      setLiveState('idle')
+      appendMessage(
+        'assistant',
+        '这页补充讲解就先到这儿，需要的话可以继续问我。',
+        'system',
+      )
+      return
+    }
+
+    const session = liveSessionRef.current + 1
+    liveSessionRef.current = session
+    appendMessage(
+      'assistant',
+      '补充讲解结束，李老师回到刚才的课堂进度。',
+      'system',
+    )
+    setLiveState('playing')
+    if (point.step >= 0) {
+      void playStep(point.index, point.step, session)
+    } else {
+      void playSegmentIntro(point.index, session)
+    }
+  }
+
   async function playStep(
     segmentIndex: number,
     stepIndex: number,
@@ -864,8 +1642,19 @@ function App() {
     if (liveSessionRef.current !== session) return
 
     const segment = liveStoryboard[segmentIndex]
-    const step = segment?.step_by_step[stepIndex]
-    if (!segment || !step) {
+    if (!segment) {
+      setLiveState('ended')
+      return
+    }
+
+    // 新结构：一段一屏 HTML 板书，口播结束后触发动画
+    if (segment.html_code && segment.speech_intro) {
+      await playDynamicSegment(segmentIndex, session)
+      return
+    }
+
+    const step = segment.step_by_step[stepIndex]
+    if (!step) {
       setLiveState('ended')
       return
     }
@@ -888,7 +1677,7 @@ function App() {
         error instanceof Error ? error.message : '语音播放失败',
       )
       setLiveState('idle')
-      appendMessage('assistant', pickLine(TTS_ERROR_LINES))
+      appendMessage('assistant', pickLine(TTS_ERROR_LINES), 'system')
       return
     }
 
@@ -937,7 +1726,7 @@ function App() {
           error instanceof Error ? error.message : '语音播放失败',
         )
         setLiveState('idle')
-        appendMessage('assistant', pickLine(TTS_ERROR_LINES))
+        appendMessage('assistant', pickLine(TTS_ERROR_LINES), 'system')
         return
       }
       if (liveSessionRef.current !== session) return
@@ -965,6 +1754,7 @@ function App() {
     setLiveError('')
     setQuizChoice(null)
     setQuizVerdict(null)
+    setBoardTrigger(null)
     setPrepareLine(pickLine(PREPARE_LINES))
     prepareStartedAtRef.current = Date.now()
     setIsPreparing(true)
@@ -982,7 +1772,34 @@ function App() {
     }
 
     setLiveState('ended')
-    appendMessage('assistant', pickLine(FINISHED_LINES))
+    appendMessage('assistant', pickLine(FINISHED_LINES), 'system')
+  }
+
+  async function recordWrongQuestion(
+    segmentIndex: number,
+    quiz: StoryboardQuiz,
+    chosen: string,
+  ) {
+    try {
+      await fetch(
+        `${API_BASE_URL}/api/tasks/${taskId ?? 0}/wrong_questions`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            segment_id: segmentIndex + 1,
+            question: quiz.question,
+            options: quiz.options,
+            correct_answer: quiz.correct_answer,
+            chosen_answer: chosen,
+            topic: quiz.question.slice(0, 60),
+            subject: subject.trim() || '通用课程',
+          }),
+        },
+      )
+    } catch {
+      // 错题记录失败不影响课堂继续
+    }
   }
 
   function handleQuizSelect(letter: string) {
@@ -1000,6 +1817,7 @@ function App() {
     }
 
     setQuizVerdict('wrong')
+    void recordWrongQuestion(liveIndexRef.current, quiz, letter)
     void playQuizFeedback('wrong', letter)
   }
 
@@ -1045,11 +1863,27 @@ function App() {
     }
 
     if (liveSessionRef.current !== session) return
+
+    if (kind === 'wrong') {
+      await startQuizRemedial(
+        segmentIndex,
+        quiz,
+        chosen || '未作答',
+        session,
+      )
+      return
+    }
+
     advanceAfterQuiz(segmentIndex, session)
   }
 
   function handleUnderstood() {
     if (liveState !== 'waiting') return
+
+    if (remedialActive) {
+      finishRemedial()
+      return
+    }
 
     const segmentIndex = liveIndexRef.current
     const stepIndex = liveStepRef.current
@@ -1072,7 +1906,7 @@ function App() {
     }
 
     setLiveState('ended')
-    appendMessage('assistant', pickLine(FINISHED_LINES))
+    appendMessage('assistant', pickLine(FINISHED_LINES), 'system')
   }
 
   async function handleNotUnderstood() {
@@ -1081,8 +1915,10 @@ function App() {
     const segmentIndex = liveIndexRef.current
     const stepIndex = liveStepRef.current
     const segment = liveStoryboard[segmentIndex]
+    const remedial = remedialActive ? remedialRef.current : null
+    const isDynamic = Boolean(remedial || segment?.html_code)
     const step = segment?.step_by_step[stepIndex]
-    if (!segment || !step) return
+    if (!remedial && (!segment || (!isDynamic && !step))) return
 
     const session = liveSessionRef.current + 1
     liveSessionRef.current = session
@@ -1095,8 +1931,16 @@ function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          board_content: segment.board_content,
-          step_speech: step.speech_text,
+          board_content: remedial
+            ? htmlToPlainText(remedial.html_code)
+            : isDynamic
+              ? htmlToPlainText(segment?.html_code ?? '')
+              : segment?.board_content ?? '',
+          step_speech: remedial
+            ? remedial.speech_intro
+            : isDynamic
+              ? segment?.speech_intro ?? ''
+              : step?.speech_text ?? '',
           subject: subject.trim() || '通用课程',
         }),
       })
@@ -1124,7 +1968,7 @@ function App() {
       const message =
         error instanceof Error ? error.message : '重新解释失败'
       setLiveError(message)
-      appendMessage('assistant', pickLine(EXPLAIN_ERROR_LINES))
+      appendMessage('assistant', pickLine(EXPLAIN_ERROR_LINES), 'teacher')
       setLiveState('waiting')
     }
   }
@@ -1322,7 +2166,7 @@ function App() {
       const result = await requestTeacherAnswer(question, contextText)
       if (liveSessionRef.current !== session) return
 
-      appendMessage('assistant', result.answer)
+      appendMessage('assistant', result.answer, 'teacher')
       setLiveState('interrupting')
       await speakWithTts(result.answer.slice(0, 1000), session)
       if (liveSessionRef.current !== session) return
@@ -1349,7 +2193,7 @@ function App() {
 
       const message = error instanceof Error ? error.message : '答疑流程失败'
       setLiveError(message)
-      appendMessage('assistant', pickLine(QA_ERROR_LINES))
+      appendMessage('assistant', pickLine(QA_ERROR_LINES), 'system')
       setLiveState('paused')
     }
   }
@@ -1357,19 +2201,32 @@ function App() {
   async function interruptClass() {
     if (!isLiveActive) return
 
+    if (isEscalating) {
+      setCompanionRaised(false)
+      setCompanionFocus('')
+      remedialModeRef.current = 'companion'
+      setRemedialMode('companion')
+      quizNextIndexRef.current = null
+    }
+
     const session = liveSessionRef.current + 1
     liveSessionRef.current = session
     const interruptedIndex = liveIndexRef.current
     const interruptedStep = liveStepRef.current
     const interruptedSegment = liveStoryboard[interruptedIndex]
     const contextText =
-      interruptedStep >= 0
-        ? interruptedSegment?.step_by_step[interruptedStep]?.speech_text ?? ''
-        : interruptedSegment?.speech_text ?? ''
+      remedialActive && remedialRef.current
+        ? remedialRef.current.speech_intro
+        : interruptedSegment?.html_code
+          ? interruptedSegment.speech_intro
+          : interruptedStep >= 0
+            ? interruptedSegment?.step_by_step[interruptedStep]?.speech_text ?? ''
+            : interruptedSegment?.speech_text ?? ''
 
     resumePointRef.current = {
       index: interruptedIndex,
       step: interruptedStep,
+      remedial: remedialActive,
     }
     interruptContextRef.current = contextText
 
@@ -1427,6 +2284,10 @@ function App() {
     }
 
     setLiveState('playing')
+    if (point.remedial && remedialRef.current) {
+      void playRemedialSegment(remedialRef.current, session)
+      return
+    }
     if (point.step >= 0) {
       void playStep(point.index, point.step, session)
     } else {
@@ -1442,11 +2303,21 @@ function App() {
     livePlaybackRef.current = null
     liveSessionRef.current += 1
 
+    remedialRef.current = null
+    remedialResumeRef.current = null
+    remedialModeRef.current = 'companion'
+    quizNextIndexRef.current = null
+    setRemedialMode('companion')
+    setRemedialBoard(null)
+    setRemedialActive(false)
+    setCompanionRaised(false)
+    setCompanionFocus('')
     setLivePosition(index, -1)
     setLiveCaption('')
     setLiveFocus('')
     setLiveHighlightLines([])
     setLiveError('')
+    setBoardTrigger(null)
     setLiveState('idle')
   }
 
@@ -1482,9 +2353,13 @@ function App() {
     }
     const segment = liveStoryboard[point.index]
     const contextText =
-      point.step >= 0
-        ? segment?.step_by_step[point.step]?.speech_text ?? ''
-        : segment?.speech_text ?? ''
+      remedialActive && remedialRef.current
+        ? remedialRef.current.speech_intro
+        : segment?.html_code
+          ? segment.speech_intro
+          : point.step >= 0
+            ? segment?.step_by_step[point.step]?.speech_text ?? ''
+            : segment?.speech_text ?? ''
     const wasPlaying =
       liveState === 'playing' ||
       liveState === 'explaining' ||
@@ -1513,6 +2388,10 @@ function App() {
 
     if (wasPlaying) {
       setLiveState('playing')
+      if (remedialActive && remedialRef.current) {
+        void playRemedialSegment(remedialRef.current, session)
+        return
+      }
       if (point.step >= 0) {
         void playStep(point.index, point.step, session)
       } else {
@@ -1529,17 +2408,20 @@ function App() {
       throw new Error('未选择 PPT 文件')
     }
 
-    const formData = new FormData()
-    formData.append('file', selectedPpt)
-    formData.append('subject', subjectValue)
-
     setUploadStage('ppt')
     setUploadProgress(null)
 
-    const data = await uploadFormData<UploadResponse>(
-      '/api/upload_ppt',
-      formData,
-      { onProgress: setUploadProgress },
+    const [uploaded] = await uploadFilesInChunks([selectedPpt], {
+      onProgress: setUploadProgress,
+      concurrency: 3,
+    })
+
+    const data = await uploadApiJson<UploadResponse>(
+      '/api/upload_ppt/finalize',
+      {
+        upload_id: uploaded.uploadId,
+        subject: subjectValue,
+      },
     )
 
     if (typeof data.task_id !== 'number') {
@@ -1567,30 +2449,76 @@ function App() {
     setPhase('uploading')
 
     try {
-      const formData = new FormData()
       let currentTaskId = pptTaskId
 
-      if (selectedPpt) {
-        if (currentTaskId === null) {
-          currentTaskId = await uploadPptFile(normalizedSubject)
-        }
-        formData.append('task_id', String(currentTaskId))
+      if (selectedPpt && currentTaskId === null) {
+        currentTaskId = await uploadPptFile(normalizedSubject)
       }
 
-      if (normalizedSubject) {
-        formData.append('subject', normalizedSubject)
+      if (selectedImages.length > 0) {
+        setUploadStage('image')
+        setUploadProgress(null)
+
+        const uploadedImages = await uploadFilesInChunks(
+          selectedImages.map((item) => item.file),
+          {
+            onProgress: setUploadProgress,
+            concurrency: 3,
+          },
+        )
+
+        setUploadProgress({
+          loaded: uploadedImages.reduce(
+            (sum, item) => sum + item.size,
+            0,
+          ),
+          total: uploadedImages.reduce(
+            (sum, item) => sum + item.size,
+            0,
+          ),
+          phase: 'finalizing',
+          chunksDone: uploadedImages.length,
+          chunksTotal: uploadedImages.length,
+        })
+
+        const imageData = await uploadApiJson<UploadResponse>(
+          '/api/upload_images/finalize',
+          {
+            upload_ids: uploadedImages.map((item) => item.uploadId),
+            task_id: currentTaskId,
+            subject: normalizedSubject || '通用课程',
+          },
+        )
+
+        if (typeof imageData.task_id !== 'number') {
+          throw new Error('图片解析接口返回数据异常')
+        }
+        currentTaskId = imageData.task_id
       }
-      selectedFiles.forEach((file) => {
-        formData.append('files', file)
-      })
 
       setUploadStage('audio')
       setUploadProgress(null)
 
-      const data = await uploadFormData<UploadResponse>(
-        '/api/upload',
-        formData,
-        { onProgress: setUploadProgress },
+      const uploaded = await uploadFilesInChunks(selectedFiles, {
+        onProgress: setUploadProgress,
+        concurrency: 4,
+      })
+
+      setUploadProgress({
+        loaded: uploaded.reduce((sum, item) => sum + item.size, 0),
+        total: uploaded.reduce((sum, item) => sum + item.size, 0),
+        phase: 'finalizing',
+        chunksDone: uploaded.length,
+        chunksTotal: uploaded.length,
+      })
+
+      const data = await uploadApiJson<UploadResponse>(
+        '/api/upload/finalize',
+        {
+          upload_ids: uploaded.map((item) => item.uploadId),
+          task_id: currentTaskId,
+          subject: normalizedSubject || '通用课程',
+        },
       )
 
       if (typeof data.task_id !== 'number') {
@@ -1600,7 +2528,7 @@ function App() {
       setUploadStage(null)
       setUploadProgress(null)
       setProcessingProgress(0)
-      setProcessingMessage('任务已创建，正在排队处理…')
+      setProcessingMessage('文件已合并，后台预处理已启动，正在排队处理…')
       setTaskId(data.task_id)
       setPhase('processing')
       void loadHistory()
@@ -1686,6 +2614,89 @@ function App() {
     }
   }
 
+  function handleImageFiles(
+    fileList: FileList | File[] | null | undefined,
+  ) {
+    if (!fileList || phase === 'uploading') return
+
+    const incoming = Array.from(fileList)
+    if (!incoming.length) return
+
+    if (selectedImages.length + incoming.length > MAX_IMAGE_COUNT) {
+      setPhase('error')
+      setUploadMessage(
+        `一次最多上传 ${MAX_IMAGE_COUNT} 张图片，请分批补充`,
+      )
+      return
+    }
+
+    const invalid = incoming.find((file) => {
+      const extension = file.name.split('.').pop()?.toLowerCase() ?? ''
+      return (
+        !ALLOWED_IMAGE_EXTENSIONS.includes(extension) ||
+        file.size > MAX_IMAGE_SIZE
+      )
+    })
+
+    if (invalid) {
+      setPhase('error')
+      setUploadMessage(
+        invalid.size > MAX_IMAGE_SIZE
+          ? `图片「${invalid.name}」大小不能超过 20MB`
+          : `图片「${invalid.name}」格式不支持，请使用 JPG、PNG、WEBP 等常见格式`,
+      )
+      return
+    }
+
+    const keys = new Set(
+      selectedImages.map((item) => `${item.file.name}::${item.file.size}`),
+    )
+    const nextItems: SelectedImage[] = []
+    for (const file of incoming) {
+      const key = `${file.name}::${file.size}`
+      if (keys.has(key)) continue
+      keys.add(key)
+      const url = URL.createObjectURL(file)
+      imageUrlsRef.current.push(url)
+      nextItems.push({
+        key: `${key}::${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        file,
+        url,
+      })
+    }
+
+    if (nextItems.length === 0) return
+    setSelectedImages((previous) => [...previous, ...nextItems])
+    setPhase('idle')
+    setUploadMessage('')
+    setUploadStage(null)
+    setUploadProgress(null)
+  }
+
+  function removeImage(key: string) {
+    const target = selectedImages.find((item) => item.key === key)
+    if (target) {
+      URL.revokeObjectURL(target.url)
+      imageUrlsRef.current = imageUrlsRef.current.filter(
+        (url) => url !== target.url,
+      )
+    }
+    const next = selectedImages.filter((item) => item.key !== key)
+    setSelectedImages(next)
+    setUploadStage(null)
+    setUploadProgress(null)
+    if (phase === 'error') {
+      setPhase('idle')
+      setUploadMessage('')
+    }
+  }
+
+  function clearSelectedImages() {
+    selectedImages.forEach((item) => URL.revokeObjectURL(item.url))
+    imageUrlsRef.current = []
+    setSelectedImages([])
+  }
+
   function handlePptFile(file: File | null | undefined) {
     if (!file || phase === 'uploading') return
 
@@ -1734,7 +2745,7 @@ function App() {
 
   function handleUploadDragOver(
     event: DragEvent<HTMLElement>,
-    target: 'ppt' | 'audio',
+    target: 'ppt' | 'image' | 'audio',
   ) {
     if (phase === 'uploading') return
     event.preventDefault()
@@ -1744,7 +2755,7 @@ function App() {
 
   function handleUploadDragLeave(
     event: DragEvent<HTMLElement>,
-    target: 'ppt' | 'audio',
+    target: 'ppt' | 'image' | 'audio',
   ) {
     // 在子元素之间移动时也会触发 dragleave，用 relatedTarget 过滤掉
     const related = event.relatedTarget as Node | null
@@ -1754,7 +2765,7 @@ function App() {
 
   function handleUploadDrop(
     event: DragEvent<HTMLElement>,
-    target: 'ppt' | 'audio',
+    target: 'ppt' | 'image' | 'audio',
   ) {
     event.preventDefault()
     event.stopPropagation()
@@ -1782,6 +2793,11 @@ function App() {
       return
     }
 
+    if (target === 'image') {
+      handleImageFiles(files)
+      return
+    }
+
     handleAudioFiles(files)
   }
 
@@ -1790,6 +2806,7 @@ function App() {
     setPhase('idle')
     setSelectedFiles([])
     setSelectedPpt(null)
+    clearSelectedImages()
     setPptTaskId(null)
     setBatchCount(0)
     setTaskId(null)
@@ -1811,6 +2828,7 @@ function App() {
     setCopyState('idle')
     setSelectedFiles([])
     setSelectedPpt(null)
+    clearSelectedImages()
     setPptTaskId(null)
     setBatchCount(0)
     setStoryboard([])
@@ -1887,6 +2905,7 @@ function App() {
       setStoryboard(segments)
       setSelectedFiles([])
       setSelectedPpt(null)
+      clearSelectedImages()
       setPptTaskId(null)
       setBatchCount(0)
       setUploadMessage('')
@@ -1895,6 +2914,7 @@ function App() {
       appendMessage(
         'assistant',
         '已加载测试数据，可直接点击「开始上课」验证直播间。',
+        'system',
       )
     } catch (error) {
       appendMessage(
@@ -1924,16 +2944,28 @@ function App() {
     window.setTimeout(() => setCopyState('idle'), 2000)
   }
 
-  async function sendChat(messageOverride?: string) {
+  async function sendChat(messageOverride?: string, escalateEnabled = true) {
     const text = (messageOverride ?? chatInput).trim()
-    if (!text || chatLoading) return
+    if (!text || chatLoading || isEscalating) return
 
     appendMessage('user', text)
     setChatInput('')
     setChatLoading(true)
 
+    const history = messages.slice(-8).map((message) => ({
+      sender:
+        message.role === 'user'
+          ? 'student'
+          : message.agent === 'teacher'
+            ? 'teacher'
+            : message.agent === 'system'
+              ? 'system'
+              : 'companion',
+      content: message.content,
+    }))
+
     try {
-      const response = await fetch(`${API_BASE_URL}/api/chat`, {
+      const response = await fetch(`${API_BASE_URL}/api/companion_chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1942,27 +2974,50 @@ function App() {
           message: text,
           subject: subject.trim() || '通用课程',
           note_context: result || null,
+          lecture_context: buildLectureContext() || null,
+          history,
+          escalate_enabled: escalateEnabled,
         }),
       })
 
-      const data = (await response.json()) as ChatResponse
+      const data = (await response.json()) as CompanionChatResponse
 
       if (!response.ok) {
         throw new Error(data.detail ?? `HTTP ${response.status}`)
       }
 
       if (typeof data.reply !== 'string' || !data.reply.trim()) {
-        throw new Error('对话接口返回内容为空')
+        throw new Error('伴读接口返回内容为空')
       }
 
-      const replyId = appendMessage('assistant', data.reply)
+      const replyId = appendMessage('assistant', data.reply, 'companion')
+      const focus = (data.focus ?? '').trim()
+
+      if (data.action === 'escalate' && escalateEnabled) {
+        if (!liveStoryboard.length) {
+          appendMessage(
+            'assistant',
+            '伴读想替你举手，但课程还没开始。先加载课程内容，我才能把问题递给李老师。',
+            'system',
+          )
+          void speakChatReply(data.reply, replyId)
+          return
+        }
+
+        appendMessage('assistant', '伴读向老师举手了', 'system')
+        setChatLoading(false)
+        await startRemedial(text, focus)
+        return
+      }
+
       void speakChatReply(data.reply, replyId)
     } catch (error) {
       appendMessage(
         'assistant',
-        `抱歉，我暂时无法回答：${
+        `抱歉，伴读暂时无法回答：${
           error instanceof Error ? error.message : '未知错误'
         }`,
+        'companion',
       )
     } finally {
       setChatLoading(false)
@@ -1970,10 +3025,10 @@ function App() {
   }
 
   function runQuickAction(action: 'summary' | 'explain') {
-    if (chatLoading) return
+    if (chatLoading || isEscalating) return
 
     if (!result) {
-      appendMessage('assistant', pickLine(NEED_NOTE_LINES))
+      appendMessage('assistant', pickLine(NEED_NOTE_LINES), 'companion')
       return
     }
 
@@ -1982,7 +3037,7 @@ function App() {
         ? '请总结当前复习笔记的核心内容，并列出 3 个复习重点。'
         : '请从当前复习笔记中选择一个重要概念，并用通俗语言解释。'
 
-    void sendChat(prompt)
+    void sendChat(prompt, false)
   }
 
   const showUploadArea =
@@ -1998,8 +3053,11 @@ function App() {
         )
       : 0
 
-  const liveStatusLabel =
-    liveState === 'playing'
+  const liveStatusLabel = isEscalating
+    ? remedialMode === 'quiz'
+      ? '错题拆解'
+      : '伴读举手'
+    : liveState === 'playing'
       ? '正在讲解'
       : liveState === 'waiting'
         ? '等待你确认'
@@ -2023,8 +3081,9 @@ function App() {
                         ? '本节结束'
                         : '待开始'
 
-  const liveStatusTone =
-    liveState === 'playing'
+  const liveStatusTone = isEscalating
+    ? 'bg-amber-200/[0.1] text-amber-100 border-amber-200/20'
+    : liveState === 'playing'
       ? 'bg-white/[0.06] text-slate-300 border-white/10'
       : liveState === 'waiting'
         ? 'bg-white/[0.08] text-slate-200 border-white/15'
@@ -2050,16 +3109,21 @@ function App() {
         <aside className="flex h-[65vh] min-h-[420px] shrink-0 flex-col border-b border-slate-200/70 bg-white/70 backdrop-blur-2xl lg:h-full lg:min-h-0 lg:w-2/5 lg:border-b-0 lg:border-r">
           <header className="border-b border-slate-200/60 px-5 py-4">
             <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-900 text-sm font-semibold text-white">
-                AI
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-600 text-sm font-semibold text-white">
+                伴
               </div>
-              <div>
-                <p className="text-sm font-semibold text-slate-900">
-                  课堂学习助手
-                </p>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-semibold text-slate-900">
+                    伴读小助手
+                  </p>
+                  <span className="rounded-full border border-emerald-200/70 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold tracking-wide text-emerald-700">
+                    多智能体
+                  </span>
+                </div>
                 <p className="mt-0.5 flex items-center gap-1 text-xs text-emerald-600">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                  在线 · 结合当前笔记回答
+                  基础问题我来答 · 难题替你举手找李老师
                 </p>
               </div>
             </div>
@@ -2069,50 +3133,122 @@ function App() {
             ref={chatScrollRef}
             className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4"
           >
-            {messages.map((message) => (
-              <div
-                key={message.id}
-                className={`flex ${
-                  message.role === 'user' ? 'justify-end' : 'justify-start'
-                }`}
-              >
-                {message.role === 'user' ? (
-                  <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-slate-900 px-4 py-2.5 text-sm leading-6 text-white">
-                    {message.content}
+            {messages.map((message) => {
+              const isUser = message.role === 'user'
+              const agent = message.agent ?? 'companion'
+
+              if (!isUser && agent === 'system') {
+                return (
+                  <div key={message.id} className="flex justify-center">
+                    <div className="inline-flex items-center gap-2 rounded-full border border-amber-200/70 bg-amber-50/80 px-3 py-1 text-[11px] font-medium text-amber-700">
+                      <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                      {message.content}
+                    </div>
                   </div>
-                ) : (
-                  <div className="chat-markdown max-w-[85%] rounded-2xl border border-slate-200/70 bg-white/75 px-4 py-2.5 backdrop-blur-xl">
-                    {speakingMessageId === message.id && (
-                      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-slate-500">
-                        <svg
-                          className="h-3.5 w-3.5 animate-pulse"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="1.8"
-                          aria-hidden="true"
+                )
+              }
+
+              const isTeacher = agent === 'teacher'
+
+              return (
+                <div
+                  key={message.id}
+                  className={`flex items-start gap-2 ${
+                    isUser ? 'justify-end' : 'justify-start'
+                  }`}
+                >
+                  {!isUser && (
+                    <div
+                      className={`mt-5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[11px] font-semibold ${
+                        isTeacher
+                          ? 'bg-slate-900 text-[#f3c969]'
+                          : 'bg-emerald-600 text-white'
+                      }`}
+                    >
+                      {isTeacher ? '李' : '伴'}
+                    </div>
+                  )}
+
+                  <div className="max-w-[82%]">
+                    {!isUser && (
+                      <div className="mb-1 flex items-center gap-1.5">
+                        <span
+                          className={`text-[11px] font-semibold ${
+                            isTeacher ? 'text-slate-800' : 'text-emerald-700'
+                          }`}
                         >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            d="M19.114 5.636a9 9 0 0 1 0 12.728M16.463 8.288a5.25 5.25 0 0 1 0 7.424M6.75 8.25l4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z"
-                          />
-                        </svg>
-                        老师正在语音解答…
+                          {isTeacher ? '主讲李老师' : '伴读小助手'}
+                        </span>
+                        <span
+                          className={`rounded-full px-1.5 py-0.5 text-[9px] font-medium ${
+                            isTeacher
+                              ? 'bg-amber-100 text-amber-700'
+                              : 'bg-emerald-50 text-emerald-700'
+                          }`}
+                        >
+                          {isTeacher ? '主讲' : '伴读'}
+                        </span>
                       </div>
                     )}
-                    <MarkdownView content={message.content} />
+
+                    {isUser ? (
+                      <div className="whitespace-pre-wrap rounded-2xl rounded-tr-md bg-slate-900 px-4 py-2.5 text-sm leading-6 text-white">
+                        {message.content}
+                      </div>
+                    ) : (
+                      <div
+                        className={`chat-markdown rounded-2xl border px-4 py-2.5 backdrop-blur-xl ${
+                          isTeacher
+                            ? 'border-amber-200/70 bg-amber-50/70'
+                            : 'border-slate-200/70 bg-white/75'
+                        }`}
+                      >
+                        {speakingMessageId === message.id && (
+                          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-slate-500">
+                            <svg
+                              className="h-3.5 w-3.5 animate-pulse"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.8"
+                              aria-hidden="true"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                d="M19.114 5.636a9 9 0 0 1 0 12.728M16.463 8.288a5.25 5.25 0 0 1 0 7.424M6.75 8.25l4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z"
+                              />
+                            </svg>
+                            {isTeacher
+                              ? '李老师正在讲解…'
+                              : '伴读正在语音解答…'}
+                          </div>
+                        )}
+                        <MarkdownView content={message.content} />
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-            ))}
+                </div>
+              )
+            })}
 
             {chatLoading && (
-              <div className="flex justify-start">
-                <div className="flex items-center gap-1.5 rounded-2xl border border-slate-200/70 bg-white/75 px-4 py-3 backdrop-blur-xl">
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.3s]" />
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.15s]" />
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400" />
+              <div className="flex items-start gap-2">
+                <div className="mt-5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-emerald-600 text-[11px] font-semibold text-white">
+                  伴
+                </div>
+                <div>
+                  <div className="mb-1 flex items-center gap-1.5">
+                    <span className="text-[11px] font-semibold text-emerald-700">
+                      伴读小助手
+                    </span>
+                    <span className="text-[10px] text-slate-400">正在思考</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 rounded-2xl border border-slate-200/70 bg-white/75 px-4 py-3 backdrop-blur-xl">
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.3s]" />
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.15s]" />
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400" />
+                  </div>
                 </div>
               </div>
             )}
@@ -2123,7 +3259,7 @@ function App() {
               <button
                 type="button"
                 onClick={() => runQuickAction('summary')}
-                disabled={!result || chatLoading}
+                disabled={!result || chatLoading || isEscalating}
                 className="rounded-full border border-slate-200/80 bg-white/70 px-3 py-1.5 text-xs text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 总结当前笔记
@@ -2131,7 +3267,7 @@ function App() {
               <button
                 type="button"
                 onClick={() => runQuickAction('explain')}
-                disabled={!result || chatLoading}
+                disabled={!result || chatLoading || isEscalating}
                 className="rounded-full border border-slate-200/80 bg-white/70 px-3 py-1.5 text-xs text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 解释某个概念
@@ -2149,19 +3285,22 @@ function App() {
                     void sendChat()
                   }
                 }}
-                placeholder="问我任何关于这堂课的问题…"
-                disabled={chatLoading}
+                placeholder="问伴读：老师刚才那句什么意思？"
+                disabled={chatLoading || isEscalating}
                 className="min-w-0 flex-1 rounded-xl border border-slate-200/80 bg-white/70 px-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-slate-200/60 disabled:opacity-60"
               />
               <button
                 type="button"
                 onClick={() => void sendChat()}
-                disabled={chatLoading || !chatInput.trim()}
+                disabled={chatLoading || isEscalating || !chatInput.trim()}
                 className="shrink-0 rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 发送
               </button>
             </div>
+            <p className="mt-2 text-[10px] text-slate-400">
+              基础问题伴读直接答；遇到难点，伴读会举手请李老师重新板书讲解。
+            </p>
           </div>
         </aside>
 
@@ -2181,6 +3320,28 @@ function App() {
               </div>
 
               <div className="flex shrink-0 flex-wrap items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => void openFavorites()}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-slate-200/80 bg-white/70 px-3 py-1.5 text-xs font-medium text-slate-600 backdrop-blur-xl transition hover:border-slate-300 hover:text-slate-900"
+                >
+                  <svg
+                    className="h-3.5 w-3.5"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    aria-hidden="true"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M17.25 3.75H6.75A1.5 1.5 0 0 0 5.25 5.25v15l6.75-4.5 6.75 4.5v-15a1.5 1.5 0 0 0-1.5-1.5Z"
+                    />
+                  </svg>
+                  我的收藏
+                </button>
+
                 <button
                   type="button"
                   onClick={() => void loadMockTask()}
@@ -2223,7 +3384,7 @@ function App() {
                   课程科目会自动识别，无需手动填写。上传课堂录音即可开始整理。
                 </p>
 
-                <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
                   <label
                     htmlFor="ppt-upload"
                     onDragEnter={(event) => handleUploadDragOver(event, 'ppt')}
@@ -2338,6 +3499,68 @@ function App() {
                       </p>
                     </div>
                   </label>
+
+                  <label
+                    htmlFor="image-upload"
+                    onDragEnter={(event) =>
+                      handleUploadDragOver(event, 'image')
+                    }
+                    onDragOver={(event) =>
+                      handleUploadDragOver(event, 'image')
+                    }
+                    onDragLeave={(event) =>
+                      handleUploadDragLeave(event, 'image')
+                    }
+                    onDrop={(event) => handleUploadDrop(event, 'image')}
+                    className={`flex cursor-pointer items-center gap-3 rounded-2xl border px-4 py-3 transition ${
+                      dragTarget === 'image'
+                        ? 'border-slate-400/70 bg-slate-100/80 ring-1 ring-slate-300/60'
+                        : 'border-slate-200/80 bg-white/60 hover:border-slate-300 hover:bg-white'
+                    } ${
+                      phase === 'uploading'
+                        ? 'pointer-events-none opacity-60'
+                        : ''
+                    }`}
+                  >
+                    <input
+                      id="image-upload"
+                      type="file"
+                      multiple
+                      accept=".jpg,.jpeg,.png,.webp,.bmp,.gif,image/*"
+                      className="hidden"
+                      onChange={(event) => {
+                        handleImageFiles(event.target.files)
+                        event.target.value = ''
+                      }}
+                    />
+                    <svg
+                      className="h-6 w-6 shrink-0 text-slate-500"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      aria-hidden="true"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A1.5 1.5 0 0 0 21.75 19.5V4.5A1.5 1.5 0 0 0 20.25 3H3.75A1.5 1.5 0 0 0 2.25 4.5v15A1.5 1.5 0 0 0 3.75 21Z"
+                      />
+                    </svg>
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-slate-700">
+                        上传补充图片
+                      </p>
+                      <p className="mt-0.5 text-xs text-slate-400">
+                        {selectedImages.length > 0
+                          ? `已选择 ${selectedImages.length} 张图片`
+                          : '可选 · JPG / PNG / WEBP · 单张 ≤ 20MB'}
+                      </p>
+                      <p className="mt-1 text-[11px] font-medium leading-4 text-slate-500">
+                        拍黑板、拍练习题，李老师会结合图片讲解
+                      </p>
+                    </div>
+                  </label>
                 </div>
 
                 {selectedPpt && (
@@ -2355,6 +3578,49 @@ function App() {
                     >
                       移除
                     </button>
+                  </div>
+                )}
+
+                {selectedImages.length > 0 && (
+                  <div className="mt-3 rounded-xl border border-slate-200/70 bg-white/60 p-3">
+                    <div className="flex items-center justify-between gap-3 text-xs">
+                      <span className="font-medium text-slate-600">
+                        补充图片 {selectedImages.length} 张
+                      </span>
+                      <button
+                        type="button"
+                        onClick={clearSelectedImages}
+                        className="text-[11px] text-slate-400 transition hover:text-red-500"
+                      >
+                        清空
+                      </button>
+                    </div>
+                    <div className="mt-2 grid grid-cols-4 gap-2 sm:grid-cols-6">
+                      {selectedImages.map((item) => (
+                        <div
+                          key={item.key}
+                          className="group relative aspect-square overflow-hidden rounded-lg border border-slate-200 bg-slate-100"
+                          title={item.file.name}
+                        >
+                          <img
+                            src={item.url}
+                            alt={item.file.name}
+                            className="h-full w-full object-cover"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => removeImage(item.key)}
+                            aria-label={`移除图片 ${item.file.name}`}
+                            className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-slate-900/70 text-xs text-white opacity-0 transition group-hover:opacity-100"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-[10px] text-slate-400">
+                      图片需要和课堂录音一起提交；会先由视觉模型提取文字与题目信息，再交给李老师备课。
+                    </p>
                   </div>
                 )}
 
@@ -2417,7 +3683,9 @@ function App() {
                     <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
                   )}
                   {phase === 'uploading'
-                    ? `正在上传${selectedPpt ? '课件与' : ''} ${selectedFiles.length} 个音频${
+                    ? `正在上传${selectedPpt ? '课件、' : ''}${
+                        selectedImages.length ? '图片与' : ''
+                      } ${selectedFiles.length} 个音频${
                         uploadProgress ? ` · ${uploadPercent}%` : '…'
                       }`
                     : '开始整理'}
@@ -2428,12 +3696,26 @@ function App() {
                     <div className="flex items-center justify-between gap-3 text-xs">
                       <span className="text-slate-600">
                         {uploadStage === 'ppt'
-                          ? '正在上传并解析 PPT 课件…'
-                          : uploadStage === 'audio'
-                            ? uploadProgress && uploadPercent >= 100
-                              ? '上传完成，服务器正在保存文件…'
-                              : `正在上传 ${selectedFiles.length} 个音频到服务器…`
-                            : '正在准备上传…'}
+                          ? uploadProgress?.phase === 'merging'
+                            ? 'PPT 分片已上传，服务器正在合并文件…'
+                            : uploadProgress?.phase === 'finalizing'
+                              ? 'PPT 已合并，正在解析课件内容…'
+                              : 'PPT 正在分片并行上传…'
+                          : uploadStage === 'image'
+                            ? uploadProgress?.phase === 'merging'
+                              ? '图片分片已上传，服务器正在合并文件…'
+                              : uploadProgress?.phase === 'finalizing'
+                                ? '图片已合并，AI 正在识别黑板与题目…'
+                                : `正在分片并行上传 ${selectedImages.length} 张图片…`
+                            : uploadStage === 'audio'
+                              ? uploadProgress?.phase === 'merging'
+                                ? '音频分片已上传，服务器正在合并文件…'
+                                : uploadProgress?.phase === 'finalizing'
+                                  ? '音频已合并，正在创建任务并启动后台预处理…'
+                                  : uploadProgress && uploadPercent >= 100
+                                    ? '分片上传完成，正在合并文件…'
+                                    : `正在分片并行上传 ${selectedFiles.length} 个音频…`
+                              : '正在准备上传…'}
                       </span>
                       <span className="font-semibold tabular-nums text-slate-700">
                         {uploadProgress ? `${uploadPercent}%` : '—'}
@@ -2455,11 +3737,31 @@ function App() {
 
                     <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1 text-[11px] text-slate-500">
                       <span className="tabular-nums">
-                        {uploadProgress
-                          ? `${formatFileSize(uploadProgress.loaded)} / ${formatFileSize(uploadProgress.total)}`
-                          : '等待浏览器开始传输…'}
+                        {uploadProgress?.phase === 'merging'
+                          ? '分片已全部到达 · 服务器正在合并'
+                          : uploadProgress?.phase === 'finalizing'
+                            ? '文件已合并 · 后台预处理即将启动'
+                            : uploadProgress
+                              ? `${formatFileSize(
+                                  uploadProgress.loaded,
+                                )} / ${formatFileSize(
+                                  uploadProgress.total,
+                                )}${
+                                  uploadProgress.speed
+                                    ? ` · ${formatSpeed(uploadProgress.speed)}`
+                                    : ''
+                                }${
+                                  typeof uploadProgress.chunksTotal ===
+                                    'number' &&
+                                  uploadProgress.chunksTotal > 0
+                                    ? ` · 分片 ${
+                                        uploadProgress.chunksDone ?? 0
+                                      }/${uploadProgress.chunksTotal}`
+                                    : ''
+                                }`
+                              : '等待浏览器开始传输…'}
                       </span>
-                      <span>大文件可能需要几分钟，请保持页面打开</span>
+                      <span>已启用 4 路分片并行上传，可保持页面打开</span>
                     </div>
                   </div>
                 )}
@@ -2561,6 +3863,40 @@ function App() {
                     </div>
 
                     <div className="flex items-center gap-2 text-xs text-slate-400">
+                      <button
+                        type="button"
+                        onClick={() => void saveCurrentBoard()}
+                        disabled={
+                          !canFavorite || favoriteSaving || isEscalating
+                        }
+                        title={
+                          canFavorite
+                            ? '保存当前板书快照，可在「我的收藏」中回放'
+                            : '当前没有可收藏的 HTML 板书'
+                        }
+                        className="inline-flex items-center gap-1.5 rounded-full border border-[#f3c969]/25 bg-[#f3c969]/[0.08] px-2.5 py-1 text-[11px] font-medium text-[#f3c969] transition hover:bg-[#f3c969]/[0.14] disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/[0.04] disabled:text-slate-500"
+                      >
+                        <svg
+                          className="h-3.5 w-3.5"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          aria-hidden="true"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M17.25 3.75H6.75A1.5 1.5 0 0 0 5.25 5.25v15l6.75-4.5 6.75 4.5v-15a1.5 1.5 0 0 0-1.5-1.5Z"
+                          />
+                        </svg>
+                        {favoriteSaved
+                          ? '已收藏'
+                          : favoriteSaving
+                            ? '收藏中…'
+                            : '收藏当前板书'}
+                      </button>
+
                       <span
                         className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${liveStatusTone}`}
                       >
@@ -2598,6 +3934,42 @@ function App() {
                     </div>
                   </div>
 
+                  {companionRaised && (
+                    <div className="mx-4 mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#f3c969]/25 bg-[#f3c969]/[0.06] px-4 py-3 lg:mx-6">
+                      <div className="flex items-center gap-3">
+                        <span className="relative flex h-2.5 w-2.5">
+                          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#f3c969]/60" />
+                          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#f3c969]" />
+                        </span>
+                        <div>
+                          <p className="text-xs font-semibold tracking-wide text-[#f3c969]">
+                            {remedialMode === 'quiz'
+                              ? '错题拆解中'
+                              : '伴读向老师举手了'}
+                          </p>
+                          <p className="mt-0.5 text-[11px] text-slate-400">
+                            {remedialMode === 'quiz'
+                              ? remedialActive
+                                ? `李老师正在拆解：${
+                                    companionFocus || '这道错题'
+                                  }`
+                                : '李老师正在把这道题拆成更小的步骤…'
+                              : remedialActive
+                                ? `李老师正在单独讲解：${
+                                    companionFocus || '你的薄弱点'
+                                  }`
+                                : '李老师已暂停原进度，正在重新备课…'}
+                          </p>
+                        </div>
+                      </div>
+                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-slate-400">
+                        {remedialMode === 'quiz'
+                          ? 'Quiz → Teacher'
+                          : 'Companion → Teacher'}
+                      </span>
+                    </div>
+                  )}
+
                   <div className="relative px-4 pb-5 pt-5 lg:px-6">
                     <span className="lecture-canvas__number" aria-hidden="true">
                       {String(liveIndex + 1).padStart(2, '0')}
@@ -2605,7 +3977,9 @@ function App() {
 
                     <div className="relative flex items-end justify-between gap-3">
                       <div className="text-[11px] uppercase tracking-[0.22em] text-slate-400">
-                        Segment {String(liveIndex + 1).padStart(2, '0')}
+                        {remedialActive
+                          ? 'Remedial · 补救板书'
+                          : `Segment ${String(liveIndex + 1).padStart(2, '0')}`}
                         {liveStepIndex >= 0 && totalSteps > 0 && (
                           <span className="ml-2 normal-case tracking-normal text-slate-400">
                             步骤 {liveStepIndex + 1}/{totalSteps}
@@ -2613,23 +3987,62 @@ function App() {
                         )}
                       </div>
                       <span className="text-[11px] text-slate-500">
-                        分镜 {liveIndex + 1} / {liveStoryboard.length || 1}
+                        {remedialActive
+                          ? '伴读举手后新增'
+                          : `分镜 ${liveIndex + 1} / ${
+                              liveStoryboard.length || 1
+                            }`}
                       </span>
                     </div>
 
                     <div className="relative mt-4">
-                      <LectureBoard
-                        content={activeLiveSegment?.board_content ?? ''}
-                        segmentIndex={liveIndex}
-                        highlightLines={liveHighlightLines}
-                        focusLabel={liveFocus}
-                        isActive={
-                          liveState === 'playing' ||
-                          liveState === 'explaining' ||
-                          liveState === 'interrupting' ||
-                          liveState === 'resuming'
-                        }
-                      />
+                      {remedialActive && remedialBoard ? (
+                        <DynamicBoard
+                          key={`remedial-${remedialKey}`}
+                          htmlCode={remedialBoard.html_code}
+                          trigger={boardTrigger}
+                          segmentIndex={liveIndex}
+                          focusLabel={
+                            companionFocus
+                              ? `补救：${companionFocus}`
+                              : '补救板书'
+                          }
+                          label="补救板书"
+                          isActive={
+                            liveState === 'playing' ||
+                            liveState === 'explaining' ||
+                            liveState === 'interrupting' ||
+                            liveState === 'resuming'
+                          }
+                        />
+                      ) : activeLiveSegment?.html_code ? (
+                        <DynamicBoard
+                          key={`dynamic-${liveIndex}`}
+                          htmlCode={activeLiveSegment.html_code}
+                          trigger={boardTrigger}
+                          segmentIndex={liveIndex}
+                          focusLabel={liveFocus}
+                          isActive={
+                            liveState === 'playing' ||
+                            liveState === 'explaining' ||
+                            liveState === 'interrupting' ||
+                            liveState === 'resuming'
+                          }
+                        />
+                      ) : (
+                        <LectureBoard
+                          content={activeLiveSegment?.board_content ?? ''}
+                          segmentIndex={liveIndex}
+                          highlightLines={liveHighlightLines}
+                          focusLabel={liveFocus}
+                          isActive={
+                            liveState === 'playing' ||
+                            liveState === 'explaining' ||
+                            liveState === 'interrupting' ||
+                            liveState === 'resuming'
+                          }
+                        />
+                      )}
 
                       {isPreparing && (
                         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-5 rounded-2xl bg-[#0f1114]/90 backdrop-blur-sm">
@@ -2657,6 +4070,7 @@ function App() {
                       >
                         {liveCaption ||
                           activeStep?.speech_text ||
+                          activeLiveSegment?.speech_intro ||
                           activeLiveSegment?.speech_text ||
                           '点击「开始上课」，老师会一步步推导，每一步都会停下来等你确认'}
                       </p>
@@ -2877,7 +4291,11 @@ function App() {
                           disabled={liveState !== 'waiting'}
                           className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-slate-500"
                         >
-                          听懂了，下一步
+                          {remedialActive
+                            ? remedialMode === 'quiz'
+                              ? '听懂了，继续下一段'
+                              : '听懂了，回到课堂'
+                            : '听懂了，下一步'}
                           <kbd className="rounded border border-slate-900/10 bg-slate-900/5 px-1.5 py-0.5 text-[10px] font-normal text-slate-600">
                             Enter
                           </kbd>
@@ -3254,6 +4672,191 @@ function App() {
           </div>
         </section>
       </div>
+
+      {favoritesOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm">
+          <div className="flex h-[90vh] w-full max-w-6xl flex-col overflow-hidden rounded-3xl border border-slate-200 bg-[#f7f7f5] shadow-2xl md:flex-row">
+            <aside className="flex max-h-[36vh] w-full shrink-0 flex-col border-b border-slate-200/70 bg-white/80 backdrop-blur-xl md:max-h-none md:w-80 md:border-b-0 md:border-r">
+              <div className="flex items-center justify-between border-b border-slate-200/60 px-4 py-3.5">
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">
+                    我的收藏
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-slate-400">
+                    共 {favorites.length} 条板书快照
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setFavoritesOpen(false)}
+                  aria-label="关闭收藏"
+                  className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:text-slate-900"
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
+                {favoritesLoading && (
+                  <p className="px-2 py-6 text-center text-xs text-slate-400">
+                    正在加载收藏…
+                  </p>
+                )}
+
+                {!favoritesLoading && favoritesError && (
+                  <p className="rounded-xl border border-red-200/70 bg-red-50/80 px-3 py-2 text-xs text-red-600">
+                    {favoritesError}
+                  </p>
+                )}
+
+                {!favoritesLoading &&
+                  !favoritesError &&
+                  favorites.length === 0 && (
+                    <div className="px-2 py-8 text-center">
+                      <p className="text-sm text-slate-500">
+                        还没有收藏的板书
+                      </p>
+                      <p className="mt-1 text-[11px] leading-5 text-slate-400">
+                        上课时点击白板上方的「收藏当前板书」，
+                        就能在这里回放当时的动态形成过程。
+                      </p>
+                    </div>
+                  )}
+
+                {favorites.map((item) => {
+                  const active =
+                    replayFavorite?.favorite_id === item.favorite_id
+                  return (
+                    <div
+                      key={item.favorite_id}
+                      className={`group flex items-start gap-2 rounded-2xl border px-3 py-2.5 transition ${
+                        active
+                          ? 'border-slate-900/20 bg-slate-900/[0.06]'
+                          : 'border-slate-200/70 bg-white/70 hover:border-slate-300'
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => chooseFavorite(item)}
+                        className="min-w-0 flex-1 text-left"
+                      >
+                        <p className="truncate text-xs font-semibold text-slate-800">
+                          {item.title || '课堂板书'}
+                        </p>
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-400">
+                          <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-slate-500">
+                            {item.source === 'quiz'
+                              ? '错题讲解'
+                              : item.source === 'remedial'
+                                ? '补救板书'
+                                : '分镜板书'}
+                          </span>
+                          <span>{item.subject || '通用课程'}</span>
+                          <span>{formatDateTime(item.saved_at)}</span>
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void removeFavorite(item.favorite_id)}
+                        aria-label="删除收藏"
+                        className="mt-0.5 shrink-0 text-[10px] text-slate-300 transition hover:text-red-500"
+                      >
+                        删除
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            </aside>
+
+            <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+              {replayFavorite ? (
+                <>
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/60 bg-white/60 px-5 py-3.5 backdrop-blur-xl">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-slate-900">
+                        {replayFavorite.title || '课堂板书'}
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-slate-400">
+                        {replayFavorite.subject || '通用课程'} ·{' '}
+                        {formatDateTime(replayFavorite.saved_at)} ·{' '}
+                        {replayFavorite.filename || '收藏快照'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={replayFavoriteAgain}
+                      className="inline-flex items-center gap-1.5 rounded-full bg-slate-900 px-3.5 py-2 text-xs font-medium text-white transition hover:bg-slate-700"
+                    >
+                      <svg
+                        className="h-3.5 w-3.5"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        aria-hidden="true"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M16.023 9.348h4.992V4.356M3.985 19.644v-4.992h4.992M4.985 9.348a7.5 7.5 0 0 1 12.366-2.75l3.664 3.75M19.015 14.652a7.5 7.5 0 0 1-12.366 2.75l-3.664-3.75"
+                        />
+                      </svg>
+                      重新播放动画
+                    </button>
+                  </div>
+
+                  <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                    {replayFavorite.html_code ? (
+                      <DynamicBoard
+                        key={`replay-${replayFavorite.favorite_id}-${replayRun}`}
+                        htmlCode={replayFavorite.html_code}
+                        trigger={replayTrigger}
+                        segmentIndex={Math.max(
+                          0,
+                          replayFavorite.segment_id - 1,
+                        )}
+                        label="收藏回放"
+                        focusLabel={replayFavorite.subject}
+                      />
+                    ) : (
+                      <div className="rounded-2xl border border-white/10 bg-[#0f1114] p-6 text-sm leading-7 text-slate-200">
+                        {replayFavorite.board_content ||
+                          '这条收藏没有可回放的 HTML 板书。'}
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-900 text-[#f3c969]">
+                    <svg
+                      className="h-5 w-5"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      aria-hidden="true"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M17.25 3.75H6.75A1.5 1.5 0 0 0 5.25 5.25v15l6.75-4.5 6.75 4.5v-15a1.5 1.5 0 0 0-1.5-1.5Z"
+                      />
+                    </svg>
+                  </div>
+                  <p className="mt-3 text-sm font-semibold text-slate-800">
+                    选择一条收藏开始回放
+                  </p>
+                  <p className="mt-1 max-w-sm text-xs leading-6 text-slate-400">
+                    回放会重新执行当时的板书动画，让你再看一遍知识是怎么一步步写出来的。
+                  </p>
+                </div>
+              )}
+            </section>
+          </div>
+        </div>
+      )}
     </main>
   )
 }

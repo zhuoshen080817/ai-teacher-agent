@@ -2,7 +2,7 @@
 
 from collections.abc import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import settings
@@ -28,3 +28,24 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
+
+
+def ensure_task_columns() -> None:
+    """为已存在的 SQLite 数据库补齐新增列（create_all 不会修改旧表）。"""
+    inspector = inspect(engine)
+    if "tasks" not in inspector.get_table_names():
+        return
+
+    existing = {column["name"] for column in inspector.get_columns("tasks")}
+    additions = {
+        "favorites": "TEXT",
+        "wrong_questions": "TEXT",
+        "image_context": "TEXT",
+    }
+
+    with engine.begin() as connection:
+        for name, column_type in additions.items():
+            if name not in existing:
+                connection.exec_driver_sql(
+                    f"ALTER TABLE tasks ADD COLUMN {name} {column_type}"
+                )

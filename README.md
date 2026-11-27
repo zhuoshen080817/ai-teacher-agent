@@ -11,12 +11,19 @@
 - 可选上传 `.pptx` 课件，自动提取 PPT 大纲并作为上下文辅助理解录音中的代词与知识点
 - 多个音频合并为一个任务，依次完成转码、切片、ASR，最后生成一份完整复习笔记
 - 后端异步处理：上传立即返回任务 ID，处理过程不阻塞页面
+- 大文件分片并行上传：音频与 PPT 按 4MB 分片、前端 4 路并发，实时显示百分比、速度与分片进度；后端合并文件后立即返回并启动后台音频转码/ASR
+- 补充图片：支持一次上传多张 JPG / PNG / WEBP / BMP / GIF，展示缩略图；后端用百炼视觉模型提取图片文字与题目/图表描述，写入 `Task.image_context`，并与 PPT、录音一起注入笔记和分镜 Prompt
 - 阿里云百炼 DashScope `paraformer-realtime-v2` 完成真实语音识别
 - 通过 `subprocess` 调用 `backend/bin/ffmpeg.exe`，一步完成转码（16kHz / 单声道 / 16bit）与 5 分钟切片
 - DeepSeek `deepseek-chat` 生成层级化 Markdown 知识框架
 - 前端每 2 秒轮询任务状态，实时展示真实进度条、百分比与当前处理阶段
-- 左右分栏智能工作台：左侧 AI 对话助手，右侧上传、进度与笔记工作区
-- 右侧为动态板书画布：Mermaid 图表 / 高亮代码块 / 大字要点，按分镜切换并高亮当前内容
+- 左右分栏智能工作台：左侧「伴读小助手」多智能体对话，右侧上传、进度与笔记工作区
+- 多智能体协同：左侧伴读负责基础答疑与深度判断；遇到没听懂或深层问题，会主动向主讲李老师举手，李老师暂停原进度并重新生成一页补救板书
+- 左侧聊天气泡区分「我」「伴读小助手」「主讲李老师」，系统举手中转消息单独居中展示
+- 板书收藏：白板上方一键收藏当前 HTML 板书、动画触发器与口播；「我的收藏」弹窗可重新播放当时的板书动态形成过程
+- 错题追踪：随堂小测答错会写入数据库；李老师当场用更耐心、更拆解的方式重新生成一页错题板书；下次生成新课件时会读取历史薄弱点，在第一段开场白里自然复习引入
+- 右侧为动态板书画布：新分镜直接下发 HTML+CSS 板书，在 sandbox iframe 内渲染；旧分镜继续使用 Mermaid 图表 / 高亮代码块 / 大字要点
+- 「先说话，后写字」：每段先播 `speech_intro`，TTS 结束后才通过 `postMessage` 触发 `animation_trigger`，让代码行、箭头和重点依次写出
 - 顶部「加载测试数据（免上传）」通过 `/api/mock_task` 直接载入固定分镜，方便快速测试直播间、打断与语速
 - 接入阿里云百炼 CosyVoice 真实 TTS（`POST /api/tts`），前端使用 `Audio` 播放；左侧聊天回答会自动语音播报并显示「老师正在语音解答…」小喇叭
 - 语速通过后端 CosyVoice 原生 `speech_rate` 合成（慢速 0.8x / 正常 1.0x / 快速 1.2x），不使用 `audio.playbackRate`，音质不失真
@@ -24,7 +31,7 @@
 - 举手打断升级为右下角常驻按钮：立即停止所有 TTS，语音或文字提问后先做意图识别——「去上厕所 / 等我一下」进入等待，知识性问题正常解答，说「讲慢点 / 讲快点」会在回应后自动切换语速继续
 - 语速按钮是双向开关：默认【老师讲慢点】切到原生 0.8x 后立即变为【讲快点吧老师】，再点一下恢复 1.0x；每次切换都会用新语速重播当前这一句
 - 直播间所有现场反馈都由大模型即时生成：答题表扬 / 安慰 / 调侃、举手问候、继续确认，均走 `/api/quiz_feedback`、`/api/teacher_cue`、`/api/ask_teacher`，前端只保留状态旁白与兜底文案
-- 启发式「步步为营」教学：每段先出题 / 给板书，再按 `step_by_step` 一步步推导，每步停下等待【听懂了，下一步】或【没听懂，再讲讲】
+- 启发式「步步为营」教学：每个分镜包含 `speech_intro`（口播）与 `html_code`（动态板书），一段讲清一个推导动作，讲完停下等待【听懂了，下一步】或【没听懂，再讲讲】
 - 每个分镜讲完弹出「随堂小测」：4 选项作答，答对可选【我真懂了】/【我是蒙的】，答错直接耐心讲解，解析由 TTS 播报后再进入下一段
 - 「生成讲解视频」为预留能力（类似 Seedance），当前灰置未启用
 - 结果支持一键复制、Markdown 排版与历史任务回看
@@ -135,6 +142,8 @@ notepad .env
 ```dotenv
 DEEPSEEK_API_KEY=sk-你的DeepSeek密钥
 DASHSCOPE_API_KEY=sk-你的阿里云百炼密钥
+# 可选：覆盖默认视觉模型（默认 qwen3-vl-plus）
+# VISION_MODEL=qwen-vl-plus
 ```
 
 > `.env` 已被 `.gitignore` 忽略，请勿提交到版本库。
@@ -194,7 +203,20 @@ VITE_API_BASE_URL=http://127.0.0.1:8080
 | GET | `/api/health` | 健康检查，返回 `{"status":"ok"}` |
 | POST | `/api/upload_ppt` | 上传 `.pptx`，提取文字并创建任务，返回 `task_id` |
 | POST | `/api/upload` | 上传一个或多个音频，字段 `files`、可选 `subject`、可选 `task_id`，返回合并任务 |
+| POST | `/api/upload/chunk/init` | 初始化分片上传会话，返回 `upload_id`、服务端分片大小与总分片数 |
+| POST | `/api/upload/chunk/{upload_id}/part/{index}` | 接收单个二进制分片，支持覆盖重试 |
+| POST | `/api/upload/chunk/{upload_id}/complete` | 校验分片完整性并合并为最终文件 |
+| POST | `/api/upload/finalize` | 用已完成的分片会话创建音频任务，立即返回并启动后台预处理 |
+| POST | `/api/upload_ppt/finalize` | 用已完成的分片会话解析 PPT 并创建占位任务 |
+| POST | `/api/upload_images/finalize` | 用已完成的分片会话调用视觉模型，生成 `image_context` 并关联到任务 |
 | POST | `/api/chat` | 智能助手对话；接收 `message`、`subject`、可选 `note_context`，返回 `reply` |
+| POST | `/api/companion_chat` | 伴读小助手：接收问题、当前讲解上下文与历史，返回 `action`（`answer` / `escalate`）、`reply`、`focus` |
+| POST | `/api/teacher_remedial` | 主讲补救讲解：伴读举手后按学生问题与薄弱点生成新的 `speech_intro`、`html_code`、`animation_trigger` |
+| POST | `/api/quiz_remedial` | 错题补救讲解：答错后由主讲老师用更耐心、更拆解的方式生成新的动态板书 |
+| GET | `/api/favorites` | 返回全部板书收藏快照，供「我的收藏」回放 |
+| POST | `/api/tasks/{task_id}/favorites` | 收藏当前板书 HTML、动画触发器与口播；`task_id=0` 兼容演示数据 |
+| DELETE | `/api/favorites/{favorite_id}` | 删除一条板书收藏 |
+| POST | `/api/tasks/{task_id}/wrong_questions` | 记录一道错题，供后续课件生成时注入个性化薄弱点 |
 | POST | `/api/ask_teacher` | 举手打断答疑；接收 `user_question`、`context`、`subject`，返回 `intent`（`pause` / `slow_down` / `question`）与现场生成的口语 `answer` |
 | POST | `/api/explain_again` | 没听懂重讲；接收 `board_content`、`step_speech`、`subject`，返回换过比喻的 `explanation` |
 | POST | `/api/quiz_feedback` | 随堂小测反馈；接收题目、选项、正确答案、学生选择与 `kind`（`correct` / `wrong` / `guess`），返回即兴点评 `reply` |
@@ -254,6 +276,7 @@ VITE_API_BASE_URL=http://127.0.0.1:8080
        → 按 subject + ppt_context + 录音文本动态拼接 Prompt
        → DeepSeek 一次性生成 Markdown 学科复习笔记
        → DeepSeek 生成「讲概念 → 出例题 → 分步推导」分镜脚本
+       → 每段输出 speech_intro + html_code + animation_trigger
        → 写入 Task.status/result
   → 前端每 2 秒轮询任务状态
   → completed 展示结果；failed 展示红色错误

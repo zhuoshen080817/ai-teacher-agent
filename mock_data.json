@@ -1,150 +1,132 @@
 {
   "task_id": 0,
-  "filename": "测试数据：C 语言指针与函数",
+  "filename": "C语言 · 指针与函数_课堂实录.wav",
   "subject": "C语言",
   "status": "completed",
-  "result": "# C 语言：指针与函数\n\n## 核心结论\n\n- 指针保存内存地址，解引用后可以读写目标变量\n- 值传递复制值，地址传递复制地址，通过指针可以修改外部变量\n- 数组形参本质上是指针\n- 函数指针保存函数入口地址，可以用来实现回调\n\n## 本节结构\n\n1. 指针的本质：地址与解引用\n2. 值传递与地址传递的区别\n3. 数组名与指针的关系\n4. 函数指针与回调\n5. 高频易错点总结\n\n## 易错点\n\n- 不要返回局部变量的地址\n- 区分 `*p++` 与 `(*p)++`\n- 指针使用前必须初始化，释放后要置空\n\n| 表达式 | 含义 |\n| --- | --- |\n| `*p++` | 先取 p 指向的值，再让 p 后移 |\n| `(*p)++` | 先取 p 指向的值，再把该值加一 |\n",
+  "result": "# C 语言：指针与函数\n\n## 一、指针的本质\n- 指针变量保存的是地址，不是值本身。\n- 指针类型决定解引用时读取多少字节，以及 `p + 1` 的步长。\n\n## 二、值传递与地址传递\n- 值传递只复制实参，函数内交换形参不会影响外部变量。\n- 传入地址可以修改外部变量，但调用前要判断空指针。\n\n## 三、数组与指针\n- 数组名在大多数表达式中退化为首元素指针。\n- `sizeof(数组名)` 得到整个数组大小，`sizeof(指针)` 只得到指针本身大小。\n\n## 四、函数指针\n- 函数指针保存函数入口地址，可作为回调参数。\n- `(*fp)(x)` 与 `fp(x)` 等价。\n\n## 五、常见错误\n- 返回局部变量地址。\n- 指针未初始化或已释放后继续使用。\n- 指针类型不匹配导致越界写。\n",
   "storyboard": [
     {
       "segment_id": 1,
-      "board_content": "flowchart TD\n    A[\"指针与函数\"] --> B[\"指针基础\"]\n    A --> C[\"值传递与地址传递\"]\n    A --> D[\"数组与指针\"]\n    A --> E[\"函数指针与回调\"]\n    B --> F[\"取地址与解引用\"]\n    C --> G[\"swap 交换变量\"]\n    D --> H[\"数组形参本质是指针\"]\n    E --> I[\"把函数作为参数传递\"]",
-      "speech_text": "好，咱们这节课来啃 C 语言里最容易绕晕的一块：指针与函数。来，先看屏幕上这张图，四条线——指针基础、值传递和地址传递、数组与指针、函数指针与回调，咱们一条一条拆开。",
-      "highlight_lines": [],
-      "step_by_step": [
-        {
-          "board_highlight": "高亮左侧“指针基础”分支",
-          "highlight_lines": [],
-          "speech_text": "先问自己一个问题：如果函数只能拿到变量的副本，它有没有办法改到外面的变量？答案是有的，办法就是指针。所以这张图的第一条线，就是先把指针这个工具搞明白，后面三条线都建立在它之上。"
-        },
-        {
-          "board_highlight": "高亮右侧“函数指针与回调”分支",
-          "highlight_lines": [],
-          "speech_text": "再看最右边这条线。当我们不只传数据，而是把函数本身也当成参数传进去，就得到了回调。这在标准库的排序、事件处理里非常常见。你先记住这张地图，我们接下来一条一条走。"
-        }
-      ],
+      "speech_intro": "好，咱们先从最根儿上的东西聊起。指针这个词听着挺唬人，其实它就是个存地址的小盒子。你想想，快递柜里每个格子都有编号，指针里放的就是那个编号，不是包裹本身。那问题来了，光有编号够不够？不够啊，我还得知道这个格子里装的是多大的东西，是文件还是大箱子。所以指针的类型特别关键，它决定了咱们顺着地址去取东西的时候，到底取几个字节，以及往前走一步该迈多大。来，咱们把这两个要点先摆出来，等会儿一个个验证。",
+      "html_code": "<div style='background:#0f1114;color:#e4e4e7;font-family:Cascadia Code,monospace;display:grid;grid-template-columns:1.1fr 1fr;gap:28px;padding:36px;min-height:420px;font-size:19px;'><div><div class='reveal-p1' style='opacity:0;border-left:4px solid #f3c969;padding-left:14px;margin-bottom:22px;'>int *p;</div><div class='reveal-p1' style='opacity:0;border-left:4px solid #f3c969;padding-left:14px;margin-bottom:22px;'>p 里存的是地址</div><div class='reveal-p1' style='opacity:0;border-left:4px solid #f3c969;padding-left:14px;'>类型决定取几个字节</div></div><div><svg width='100%' height='240' viewBox='0 0 300 240'><rect x='20' y='30' width='120' height='60' fill='none' stroke='#e4e4e7' stroke-width='2'/><text x='45' y='68' fill='#e4e4e7' font-size='18'>0x100</text><line class='reveal-p1' x1='140' y1='60' x2='230' y2='60' stroke='#f3c969' stroke-width='2' stroke-dasharray='120' stroke-dashoffset='120'/><text x='150' y='45' fill='#f3c969' font-size='16'>地址</text><rect x='230' y='30' width='50' height='60' fill='none' stroke='#f3c969' stroke-width='2'/><text x='240' y='68' fill='#f3c969' font-size='16'>p</text></svg></div><style>.reveal-p1.is-active{opacity:1 !important;animation:fp1 .6s forwards;}@keyframes fp1{from{opacity:0;transform:translateX(-12px);}to{opacity:1;transform:none;}}</style></div>",
+      "animation_trigger": "reveal-p1",
       "quiz": {
-        "question": "关于指针变量 p，下面哪个说法是正确的？",
+        "question": "一个 int 型指针 p 指向某块内存，表达式 p 加 1 之后，地址通常向前移动多少？",
         "options": [
-          "p 里面保存的是另一个变量的内存地址",
-          "p 里面保存的是另一个变量的值副本",
-          "p 只能指向数组，不能指向普通变量",
-          "p 一旦定义就不能再改变指向"
+          "1 个字节",
+          "4 个字节",
+          "8 个字节",
+          "不确定，要看运行结果"
         ],
-        "correct_answer": "A",
-        "explanation_correct": "真棒！指针变量存的不是数据本身，而是目标变量的地址，通过解引用就能顺着地址读写那块内存。你已经抓住了指针的本质。",
-        "explanation_wrong": "没关系，别灰心。指针里存的确实是地址，不是值的副本；值传递才会复制一份值。我们重新记一遍：指针是门牌号，不是房间里的东西。",
-        "explanation_guess": "哈哈，被你蒙对了。但我还得给你讲讲原理：指针保存的是地址，解引用才访问数据，这和把值直接复制一份给形参是完全不同的两件事。"
+        "correct_answer": "B",
+        "explanation_correct": "漂亮！指针的步长由它指向的类型决定，int 通常占 4 个字节，所以 p 加 1 就跨过一整个 int。你抓住了类型决定步长这个核心。",
+        "explanation_wrong": "哎呀，是我的锅，我没讲透。指针加 1 不是加一个字节，而是跨过它指向类型的一个完整对象。int 一般 4 字节，所以是 4。咱们记住：步长看类型，不看数字。",
+        "explanation_guess": "蒙对也算对，但我得给你补一锤子。指针加 1 跨的是它指向类型的大小，int 通常 4 字节。下次别靠猜，靠类型推。"
       }
     },
     {
       "segment_id": 2,
-      "board_content": "```c\nint a = 10;\nint *p = &a;          // p 保存 a 的地址\nprintf(\"%d\\n\", *p);   // 解引用读取 a\n*p = 20;              // 通过指针修改 a\n```",
-      "speech_text": "我们来看这段只有四行的代码。请大家先不要看注释，自己判断一下：屏幕上最后 a 的值是多少？先在心里给出答案，我们一步一步验证。",
-      "highlight_lines": [],
-      "step_by_step": [
-        {
-          "board_highlight": "高亮第 1 行，定义变量 a",
-          "highlight_lines": [1],
-          "speech_text": "第一行，我们在内存里开了一块空间叫 a，里面放 10。你可以把它想成宿舍里住着小明，a 就是那个房间。现在的问题是，我们怎么把房间号告诉别人？"
-        },
-        {
-          "board_highlight": "高亮第 2 行，取地址赋给指针",
-          "highlight_lines": [2],
-          "speech_text": "第二行就是答案。取地址符号把 a 的房间号取出来，交给指针 p。所以 p 里存的不是 10，而是 a 的地址。注意，p 自己也是一个变量，它也有自己的房间，只是房间里放的是门牌号。"
-        },
-        {
-          "board_highlight": "高亮第 3、4 行，先读后写",
-          "highlight_lines": [3, 4],
-          "speech_text": "第三行用星号解引用，顺着门牌号找到房间，读出里面的 10。第四行同样解引用，但这次是往房间里写 20。所以最后 a 的值是 20。记住一句话：指针不存数据，只存找到数据的路。"
-        }
-      ]
+      "speech_intro": "来，咱们看个特别经典的坑，swap 交换函数。很多同学写完信心满满，一运行发现俩数根本没换。为啥呢？因为 C 语言函数传参是值传递，你传进去的只是实参的一个副本。就好比你把你家钥匙的照片给了开锁师傅，他拿着照片再怎么比划，也开不了你家门。函数里交换的只是那两个副本，函数一结束，副本就没了，外面的变量纹丝不动。咱们先把这段代码摆上来，看看它到底干了啥。",
+      "html_code": "<div style='background:#0f1114;color:#e4e4e7;font-family:Cascadia Code,monospace;display:grid;grid-template-columns:1.2fr 1fr;gap:28px;padding:36px;min-height:420px;font-size:19px;'><div><div class='reveal-p2' style='opacity:0;margin-bottom:6px;'><span style='color:#f3c969;'>void</span> swap(<span style='color:#f3c969;'>int</span> a, <span style='color:#f3c969;'>int</span> b){</div><div class='reveal-p2' style='opacity:0;margin-left:24px;margin-bottom:6px;'>int t = a;</div><div class='reveal-p2' style='opacity:0;margin-left:24px;margin-bottom:6px;'>a = b;</div><div class='reveal-p2' style='opacity:0;margin-left:24px;margin-bottom:6px;'>b = t;</div><div class='reveal-p2' style='opacity:0;'>}</div></div><div><div class='reveal-p2' style='opacity:0;border-left:4px solid #f3c969;padding-left:14px;margin-bottom:18px;'>a、b 是副本</div><div class='reveal-p2' style='opacity:0;border-left:4px solid #f3c969;padding-left:14px;margin-bottom:18px;'>交换副本无效</div><div class='reveal-p2' style='opacity:0;border-left:4px solid #f3c969;padding-left:14px;'>外部变量不变</div></div><style>.reveal-p2.is-active{opacity:1 !important;animation:fp2 .5s forwards;}@keyframes fp2{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}</style></div>",
+      "animation_trigger": "reveal-p2",
+      "quiz": null
     },
     {
       "segment_id": 3,
-      "board_content": "flowchart LR\n    A[\"调用 swap(a, b)\"] --> B[\"值传递：复制 a、b\"]\n    B --> C[\"函数内交换副本\"]\n    C --> D[\"外部变量不变\"]\n    A --> E[\"调用 swap(&a, &b)\"]\n    E --> F[\"地址传递：复制地址\"]\n    F --> G[\"解引用后交换外部变量\"]",
-      "speech_text": "接下来是一个经典问题：为什么很多同学写的 swap 函数，调用完两个变量根本没换？请大家看这张对比图，左边是值传递，右边是地址传递，差别到底在哪？",
-      "highlight_lines": [],
-      "step_by_step": [
-        {
-          "board_highlight": "高亮左半部分：值传递链路",
-          "highlight_lines": [],
-          "speech_text": "左边这条链路，函数收到的是 a 和 b 的副本。函数里确实把两个副本换了，但副本是函数自己的临时房间，函数一结束就销毁。外面的 a 和 b 从头到尾没被动过，所以你看不到任何变化。"
-        },
-        {
-          "board_highlight": "高亮右半部分：地址传递链路",
-          "highlight_lines": [],
-          "speech_text": "右边这条链路，我们传的是取地址后的结果。形参拿到的仍然是副本，但副本里装的是门牌号。顺着门牌号解引用，改的就是外面那间真实的房间。所以想让函数修改外部变量，就必须把地址交出去。"
-        }
-      ]
+      "speech_intro": "那怎么才能真把外面的变量换掉呢？思路很简单，别给副本，给地址。你把变量的地址传进去，函数里拿着地址就能找到本尊，直接改它。这就好比你直接把钥匙给师傅，而不是给照片。不过这里有个大前提，传进来的地址得靠谱，得先判空，不然拿着一个野地址去写，程序当场就崩给你看。咱们把指针版的 swap 写出来，再补上判空这一步。",
+      "html_code": "<div style='background:#0f1114;color:#e4e4e7;font-family:Cascadia Code,monospace;display:grid;grid-template-columns:1.2fr 1fr;gap:28px;padding:36px;min-height:420px;font-size:19px;'><div><div class='reveal-p3' style='opacity:0;margin-bottom:6px;'><span style='color:#f3c969;'>void</span> swap(<span style='color:#f3c969;'>int</span> *a, <span style='color:#f3c969;'>int</span> *b){</div><div class='reveal-p3' style='opacity:0;margin-left:24px;margin-bottom:6px;'><span style='color:#f3c969;'>if</span>(!a || !b) <span style='color:#f3c969;'>return</span>;</div><div class='reveal-p3' style='opacity:0;margin-left:24px;margin-bottom:6px;'>int t = *a;</div><div class='reveal-p3' style='opacity:0;margin-left:24px;margin-bottom:6px;'>*a = *b;</div><div class='reveal-p3' style='opacity:0;margin-left:24px;margin-bottom:6px;'>*b = t;</div><div class='reveal-p3' style='opacity:0;'>}</div></div><div><div class='reveal-p3' style='opacity:0;border-left:4px solid #f3c969;padding-left:14px;margin-bottom:18px;'>传地址，改本尊</div><div class='reveal-p3' style='opacity:0;border-left:4px solid #f3c969;padding-left:14px;margin-bottom:18px;'>先判空，防野指针</div><div class='reveal-p3' style='opacity:0;border-left:4px solid #f3c969;padding-left:14px;'>解引用才是那块内存</div></div><style>.reveal-p3.is-active{opacity:1 !important;animation:fp3 .5s forwards;}@keyframes fp3{from{opacity:0;transform:translateX(12px);}to{opacity:1;transform:none;}}</style></div>",
+      "animation_trigger": "reveal-p3",
+      "quiz": {
+        "question": "下面哪种做法最可能让 swap 真正交换外部两个 int 变量的值？",
+        "options": [
+          "把两个 int 值直接传给形参",
+          "把两个 int 变量的地址传给指针形参",
+          "在函数里重新声明两个同名变量",
+          "把两个 int 变量改成全局变量再传值"
+        ],
+        "correct_answer": "B",
+        "explanation_correct": "对喽！传地址进去，函数里解引用就能碰到本尊，交换才生效。你抓住了值传递和地址传递的本质区别。",
+        "explanation_wrong": "别急，是我的锅。值传递只复制副本，改副本没用。想改外部变量，必须把地址传进去，函数里用星号解引用。咱们再默念一遍：要改谁，就传谁的地址。",
+        "explanation_guess": "嘿，蒙对了但得说清楚。传地址才能找到本尊，传值只是副本。下次判断标准就一条：函数里改的是不是那块原内存。"
+      }
     },
     {
       "segment_id": 4,
-      "board_content": "```c\nvoid printArray(int arr[], int n) {\n    for (int i = 0; i < n; i++) {\n        printf(\"%d \", arr[i]);\n    }\n}\n\nint a[3] = {1, 2, 3};\nprintArray(a, 3);\n```",
-      "speech_text": "数组和指针的关系，我们通过这段打印数组的代码来体会。请注意函数第一个参数写的是方括号，看起来像数组，但它真的是数组吗？",
-      "highlight_lines": [],
-      "step_by_step": [
-        {
-          "board_highlight": "高亮函数签名这一行",
-          "highlight_lines": [1],
-          "speech_text": "在 C 语言里，数组作为函数参数会退化成指向首元素的指针。所以你写成方括号，和写成星号，编译器看到的是同一个东西。这不是语法糖，而是真实的类型退化。"
-        },
-        {
-          "board_highlight": "高亮循环和下标访问",
-          "highlight_lines": [2, 3],
-          "speech_text": "正因为形参其实是指针，循环里的下标访问，本质上是指针加偏移再解引用。arr 加 i 找到第 i 个元素的地址，再解引用取出来。所以这段代码能正常工作，但它依赖你额外传进来的长度 n。"
-        },
-        {
-          "board_highlight": "高亮主函数调用",
-          "highlight_lines": [7, 8],
-          "speech_text": "最后两行，数组名 a 传进去，自动转换成首元素地址。这就是为什么函数内部用长度计算会得到指针大小，而不是整个数组大小。所以数组长度必须单独传，不能指望函数自己算出来。"
-        }
-      ]
+      "speech_intro": "接下来咱们聊聊数组名这个老熟人。很多同学把数组名和指针当成一回事，其实差得远。数组名在大多数表达式里确实会退化成指向首元素的指针，比如你把它传给函数，它就是个指针。但是有个例外特别爱考，sizeof 数组名的时候，它不退化了，得到的是整个数组的大小。这就好比一个班的花名册，平时你拿它当一个人的联系方式用，但一量厚度，量的是整本册子。咱们用一段代码把这个差别摆出来。",
+      "html_code": "<div style='background:#0f1114;color:#e4e4e7;font-family:Cascadia Code,monospace;display:grid;grid-template-columns:1.2fr 1fr;gap:28px;padding:36px;min-height:420px;font-size:19px;'><div><div class='reveal-p4' style='opacity:0;margin-bottom:8px;'><span style='color:#f3c969;'>int</span> arr[5];</div><div class='reveal-p4' style='opacity:0;margin-bottom:8px;'>sizeof(arr) → 20</div><div class='reveal-p4' style='opacity:0;margin-bottom:8px;'><span style='color:#f3c969;'>int</span> *p = arr;</div><div class='reveal-p4' style='opacity:0;'>sizeof(p) → 8</div></div><div><div class='reveal-p4' style='opacity:0;border-left:4px solid #f3c969;padding-left:14px;margin-bottom:18px;'>数组名：整块大小</div><div class='reveal-p4' style='opacity:0;border-left:4px solid #f3c969;padding-left:14px;margin-bottom:18px;'>指针变量：指针本身大小</div><div class='reveal-p4' style='opacity:0;border-left:4px solid #f3c969;padding-left:14px;'>传参后退化为指针</div></div><style>.reveal-p4.is-active{opacity:1 !important;animation:fp4 .5s forwards;}@keyframes fp4{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}</style></div>",
+      "animation_trigger": "reveal-p4",
+      "quiz": null
     },
     {
       "segment_id": 5,
-      "board_content": "```c\nint add(int a, int b) {\n    return a + b;\n}\n\nint (*fp)(int, int) = add;  // 函数指针指向 add\nprintf(\"%d\\n\", fp(3, 4)); // 通过函数指针调用\n```",
-      "speech_text": "现在进入最后一层：函数指针。函数在内存里也有地址，既然是地址，就能被指针保存。请看这段代码，注意声明的括号位置，这里是最容易写错的地方。",
-      "highlight_lines": [],
-      "step_by_step": [
-        {
-          "board_highlight": "高亮普通函数定义",
-          "highlight_lines": [1, 2, 3],
-          "speech_text": "前三行是一个再普通不过的加法函数。它有自己的入口地址，只是平时我们直接用名字调用，感觉不到地址的存在。"
-        },
-        {
-          "board_highlight": "高亮函数指针声明第 5 行",
-          "highlight_lines": [5],
-          "speech_text": "第五行是关键。星号必须先和名字结合，所以要用括号把星号和 fp 括起来，再写参数列表。如果不加括号，它就变成了一个返回指针的函数声明，含义完全变了。"
-        },
-        {
-          "board_highlight": "高亮通过函数指针调用",
-          "highlight_lines": [6],
-          "speech_text": "第六行用 fp 直接调用，写法和普通函数一样，因为函数指针可以隐式解引用。有了这个能力，我们就能把函数作为参数传进另一个函数，实现回调，比如让排序函数使用你自定义的比较规则。"
-        }
-      ]
+      "speech_intro": "刚才说指针加 1 的步长看类型，咱们现在拿具体类型验证一下。char 指针加 1，地址挪一个字节，因为它指向的就是一个字节。int 指针加 1，通常挪四个字节，跨过一整个 int。这就好比两个人走路，一个迈小碎步，一个迈大步，迈多大取决于你脚上穿的鞋，也就是类型。咱们画个图，把 char 和 int 两条路并排摆出来，你一眼就能看出差别。",
+      "html_code": "<div style='background:#0f1114;color:#e4e4e7;font-family:Cascadia Code,monospace;padding:36px;min-height:420px;font-size:19px;'><div style='margin-bottom:30px;'><div class='reveal-p5' style='opacity:0;color:#f3c969;margin-bottom:10px;'>char * 每次 +1 字节</div><svg width='100%' height='70' viewBox='0 0 600 70'><line class='reveal-p5' x1='20' y1='40' x2='560' y2='40' stroke='#e4e4e7' stroke-width='2' stroke-dasharray='540' stroke-dashoffset='540'/><circle class='reveal-p5' cx='80' cy='40' r='6' fill='#f3c969'/><circle class='reveal-p5' cx='180' cy='40' r='6' fill='#f3c969'/><circle class='reveal-p5' cx='280' cy='40' r='6' fill='#f3c969'/></svg></div><div><div class='reveal-p5' style='opacity:0;color:#f3c969;margin-bottom:10px;'>int * 每次 +1 通常 4 字节</div><svg width='100%' height='70' viewBox='0 0 600 70'><line class='reveal-p5' x1='20' y1='40' x2='560' y2='40' stroke='#e4e4e7' stroke-width='2' stroke-dasharray='540' stroke-dashoffset='540'/><circle class='reveal-p5' cx='80' cy='40' r='6' fill='#f3c969'/><circle class='reveal-p5' cx='280' cy='40' r='6' fill='#f3c969'/><circle class='reveal-p5' cx='480' cy='40' r='6' fill='#f3c969'/></svg></div><style>.reveal-p5.is-active{opacity:1 !important;animation:fp5 .6s forwards;}@keyframes fp5{from{opacity:0;}to{opacity:1;}}</style></div>",
+      "animation_trigger": "reveal-p5",
+      "quiz": {
+        "question": "设有 char c 和 int i 两个指针，各自加 1 之后，地址增量的关系通常是？",
+        "options": [
+          "两者都增加 1 个字节",
+          "两者都增加 4 个字节",
+          "char 指针增 1 字节，int 指针增 4 字节",
+          "char 指针增 4 字节，int 指针增 1 字节"
+        ],
+        "correct_answer": "C",
+        "explanation_correct": "稳！步长跟着类型走，char 是一字节，int 通常四字节。你把这个规律吃透了，指针运算就不容易翻车。",
+        "explanation_wrong": "来，是我的锅，咱们换个思路。指针加 1 跨的是它指向类型的大小，char 一字节，int 四字节，所以增量不一样。别记数字，记类型。",
+        "explanation_guess": "蒙对啦，但原理得补上。步长等于所指类型的大小，char 小步，int 大步。下次先问自己：这个指针指向啥类型？"
+      }
     },
     {
       "segment_id": 6,
-      "board_content": "- 不要返回局部变量的地址\n- 区分 *p++ 与 (*p)++\n- 指针使用前必须初始化\n- 释放内存后立即置空，避免野指针\n- 数组形参在函数内不能用 `sizeof` 求元素个数\n- 双层循环的时间复杂度为 $O(n^2)$，空间复杂度为 $O(1)$\n\n循环累加求和公式：\n\n$$\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$$",
-      "speech_text": "最后我们做一次易错点复盘。屏幕上是五条最容易踩的坑，请你先自己读一遍，然后我们挑最关键的两条深入说。",
-      "highlight_lines": [],
-      "step_by_step": [
-        {
-          "board_highlight": "聚焦第一条：返回局部变量地址",
-          "highlight_lines": [],
-          "speech_text": "第一条最危险。局部变量在栈上，函数一返回，那块空间就失效了。你返回它的地址，拿到的是一个随时会被覆盖的野指针。正确做法是让调用方传缓冲区进来，或者在堆上分配内存。"
-        },
-        {
-          "board_highlight": "聚焦第二条：指针自增的歧义",
-          "highlight_lines": [],
-          "speech_text": "第二条考察优先级。星号和自增同级，从右往左结合，所以先让指针后移，再取旧位置的值。如果先加括号，就是先解引用，再把那个值加一。两者结果完全不同，考试和面试都爱考。"
-        },
-        {
-          "board_highlight": "回顾全部五条",
-          "highlight_lines": [],
-          "speech_text": "剩下的三条也同样重要：指针必须初始化，释放后立刻置空，数组形参不能用长度计算。把这几条刻进肌肉记忆，指针就不再是洪水猛兽，而是你手里精确可控的工具。"
-        }
-      ]
+      "speech_intro": "好，咱们换个口味，看看函数指针。函数在内存里也有入口地址，函数指针就是把这个地址存起来的一个变量。它最大的用处是当参数传，也就是回调。你想想遥控器，我不用知道电视内部怎么工作，按哪个键就调哪个功能。函数指针就是那个按键，调用的时候写星号 fp 加括号，或者直接 fp 加括号都行。咱们先定义一个，再把它当参数传进去试试。",
+      "html_code": "<div style='background:#0f1114;color:#e4e4e7;font-family:Cascadia Code,monospace;display:grid;grid-template-columns:1.2fr 1fr;gap:28px;padding:36px;min-height:420px;font-size:19px;'><div><div class='reveal-p6' style='opacity:0;margin-bottom:8px;'><span style='color:#f3c969;'>int</span> add(<span style='color:#f3c969;'>int</span> x,<span style='color:#f3c969;'>int</span> y){<span style='color:#f3c969;'>return</span> x+y;}</div><div class='reveal-p6' style='opacity:0;margin-bottom:8px;'><span style='color:#f3c969;'>int</span> (*fp)(<span style='color:#f3c969;'>int</span>,<span style='color:#f3c969;'>int</span>) = add;</div><div class='reveal-p6' style='opacity:0;margin-bottom:8px;'>fp(2,3);</div><div class='reveal-p6' style='opacity:0;'>(*fp)(2,3);</div></div><div><div class='reveal-p6' style='opacity:0;border-left:4px solid #f3c969;padding-left:14px;margin-bottom:18px;'>存函数入口地址</div><div class='reveal-p6' style='opacity:0;border-left:4px solid #f3c969;padding-left:14px;margin-bottom:18px;'>可作回调参数</div><div class='reveal-p6' style='opacity:0;border-left:4px solid #f3c969;padding-left:14px;'>两种调用写法等价</div></div><style>.reveal-p6.is-active{opacity:1 !important;animation:fp6 .5s forwards;}@keyframes fp6{from{opacity:0;transform:translateX(-12px);}to{opacity:1;transform:none;}}</style></div>",
+      "animation_trigger": "reveal-p6",
+      "quiz": null
+    },
+    {
+      "segment_id": 7,
+      "speech_intro": "函数指针最漂亮的用法是回调。啥意思呢？我写一个通用的处理函数，具体每一步干啥，不写死，而是让调用者把函数地址传进来。这就好比你去餐厅点菜，厨房的灶是通用的，你点啥它做啥，你点的那个菜就是回调函数。咱们写一个 apply 函数，接收两个数和一个函数指针，把函数指针一调，结果就出来了。这样代码就灵活多了，同一套框架能配不同的行为。",
+      "html_code": "<div style='background:#0f1114;color:#e4e4e7;font-family:Cascadia Code,monospace;display:grid;grid-template-columns:1.2fr 1fr;gap:28px;padding:36px;min-height:420px;font-size:19px;'><div><div class='reveal-p7' style='opacity:0;margin-bottom:8px;'><span style='color:#f3c969;'>int</span> apply(<span style='color:#f3c969;'>int</span> a,<span style='color:#f3c969;'>int</span> b,<span style='color:#f3c969;'>int</span> (*f)(<span style='color:#f3c969;'>int</span>,<span style='color:#f3c969;'>int</span>)){</div><div class='reveal-p7' style='opacity:0;margin-left:24px;margin-bottom:8px;'><span style='color:#f3c969;'>return</span> f(a,b);</div><div class='reveal-p7' style='opacity:0;margin-bottom:8px;'>}</div><div class='reveal-p7' style='opacity:0;'>apply(2,3,add);</div></div><div><div class='reveal-p7' style='opacity:0;border-left:4px solid #f3c969;padding-left:14px;margin-bottom:18px;'>框架不变</div><div class='reveal-p7' style='opacity:0;border-left:4px solid #f3c969;padding-left:14px;margin-bottom:18px;'>行为由回调决定</div><div class='reveal-p7' style='opacity:0;border-left:4px solid #f3c969;padding-left:14px;'>传函数名即传地址</div></div><style>.reveal-p7.is-active{opacity:1 !important;animation:fp7 .5s forwards;}@keyframes fp7{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}</style></div>",
+      "animation_trigger": "reveal-p7",
+      "quiz": {
+        "question": "关于函数指针作回调参数，下面说法正确的是？",
+        "options": [
+          "回调函数必须在调用前被复制一份",
+          "把函数名传给函数指针形参，本质是传函数入口地址",
+          "函数指针只能调用一次",
+          "回调参数不能接收不同行为的函数"
+        ],
+        "correct_answer": "B",
+        "explanation_correct": "没错！函数名在表达式里就是入口地址，传给函数指针形参，框架里一调就执行对应函数。回调的灵活就在这儿。",
+        "explanation_wrong": "哎呀，是我的锅。函数名传过去就是地址，不是复制函数体。函数指针可以反复调用，也能接不同函数，这正是回调的威力。咱们再看一遍 apply 那段。",
+        "explanation_guess": "蒙对啦，但得说透。函数名即地址，传进去就能调。回调的价值是同一框架配不同行为，不是只能调一次。"
+      }
+    },
+    {
+      "segment_id": 8,
+      "speech_intro": "咱们再往深走一步，聊聊二级指针。有时候你想在函数里改的不是某个值，而是一个指针本身，比如链表的头指针。这时候传一级指针就不够了，因为改的只是副本。你得传指针的地址，也就是二级指针，函数里解引用两次，才能碰到那个头指针本尊。这就好比你要改的是门牌号本身，不是门牌号指向的房间。咱们画个两层的关系图，把这个链条理清楚。",
+      "html_code": "<div style='background:#0f1114;color:#e4e4e7;font-family:Cascadia Code,monospace;padding:36px;min-height:420px;font-size:19px;'><div style='display:flex;align-items:center;gap:22px;margin-bottom:26px;'><div class='reveal-p8' style='opacity:0;border:2px solid #f3c969;padding:14px 18px;'>pp</div><svg class='reveal-p8' style='opacity:0;' width='90' height='40'><line x1='0' y1='20' x2='80' y2='20' stroke='#f3c969' stroke-width='2' stroke-dasharray='80' stroke-dashoffset='80'/></svg><div class='reveal-p8' style='opacity:0;border:2px solid #e4e4e7;padding:14px 18px;'>p</div><svg class='reveal-p8' style='opacity:0;' width='90' height='40'><line x1='0' y1='20' x2='80' y2='20' stroke='#e4e4e7' stroke-width='2' stroke-dasharray='80' stroke-dashoffset='80'/></svg><div class='reveal-p8' style='opacity:0;border:2px solid #e4e4e7;padding:14px 18px;'>节点</div></div><div class='reveal-p8' style='opacity:0;border-left:4px solid #f3c969;padding-left:14px;margin-bottom:14px;'>pp 存 p 的地址</div><div class='reveal-p8' style='opacity:0;border-left:4px solid #f3c969;padding-left:14px;'>解引用两次改到头指针</div><style>.reveal-p8.is-active{opacity:1 !important;animation:fp8 .6s forwards;}@keyframes fp8{from{opacity:0;}to{opacity:1;}}</style></div>",
+      "animation_trigger": "reveal-p8",
+      "quiz": null
+    },
+    {
+      "segment_id": 9,
+      "speech_intro": "最后咱们把几个高频雷区过一遍，这些可都是考试和调试时最爱踩的坑。第一个，返回局部变量的地址，函数一结束栈就没了，你返回的地址指向的是垃圾。第二个，指针没初始化就拿来用，野指针乱指，写进去就是灾难。第三个，类型不匹配，比如把 int 地址当 char 指针用，解引用时字节数不对，越界写就来了。咱们把这三条并排摆出来，你记牢了能少熬好几个夜。",
+      "html_code": "<div style='background:#0f1114;color:#e4e4e7;font-family:Cascadia Code,monospace;display:grid;grid-template-columns:1fr 1fr 1fr;gap:22px;padding:36px;min-height:420px;font-size:19px;'><div class='reveal-p9' style='opacity:0;border-top:4px solid #f3c969;padding-top:14px;'>返回局部变量地址<br><span style='color:#f3c969;'>栈已释放</span></div><div class='reveal-p9' style='opacity:0;border-top:4px solid #f3c969;padding-top:14px;'>指针未初始化<br><span style='color:#f3c969;'>野指针</span></div><div class='reveal-p9' style='opacity:0;border-top:4px solid #f3c969;padding-top:14px;'>类型不匹配<br><span style='color:#f3c969;'>越界写</span></div><style>.reveal-p9.is-active{opacity:1 !important;animation:fp9 .5s forwards;}@keyframes fp9{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:none;}}</style></div>",
+      "animation_trigger": "reveal-p9",
+      "quiz": {
+        "question": "下面哪种写法最容易造成野指针或非法访问？",
+        "options": [
+          "定义指针后立刻赋值为某个有效变量地址",
+          "把局部变量的地址从函数里返回出去",
+          "使用前先判断指针是否为空",
+          "指针类型与所指对象类型保持一致"
+        ],
+        "correct_answer": "B",
+        "explanation_correct": "漂亮！局部变量在函数返回后栈空间就失效了，返回它的地址就是悬空指针。你把这个坑记牢，调试能省一大半时间。",
+        "explanation_wrong": "别慌，是我的锅。局部变量函数一结束就没了，返回它的地址指向的是已释放的栈，属于悬空指针。判空、类型一致都是好习惯，问题出在返回局部地址。",
+        "explanation_guess": "蒙对啦，但得讲明白。局部变量出栈即失效，返回其地址就是悬空指针。记住：别把将死的变量的地址带出去。"
+      }
     }
   ]
 }
