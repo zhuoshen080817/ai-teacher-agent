@@ -972,6 +972,11 @@ def _build_storyboard_prompt(
         '   - "animation_trigger"：一个 CSS 类名，只允许字母、数字和连字符，'
         "例如 reveal-line-1。它必须出现在 html_code 中；"
         "前端会在 speech_intro 播完后给这个类加上 is-active；\n"
+        '   - "ppt_page"：可选整数，若 PPT 大纲中包含「## 第 N 页」且本分镜对应其中某页，'
+        "填写对应正整数页码（如 3），无对应 PPT 时填 null；\n"
+        '   - "highlight_lines"：可选整数数组，若 html_code 包含代码行，'
+        "填写本步重点讲解的 1-based 代码行号（如 [2, 3]），并为代码行元素加上 "
+        'data-line="1"、data-line="2" 属性；无代码时填 []；\n'
         '   - "quiz"：可选，每 2 到 3 个分镜配一道随堂小测，'
         "必须是对象，字段如下：\n"
         '       · "question"：紧扣本分镜的单选题，30 到 120 个字；\n'
@@ -1144,9 +1149,59 @@ def _normalize_quiz(raw: object) -> dict[str, object] | None:
     }
 
 
+def _parse_ppt_page(raw: object) -> int | None:
+    """解析 PPT 页码，兼容正整数或「第3页」等字符串格式。"""
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw if 0 < raw <= 500 else None
+    text = str(raw).strip()
+    if not text:
+        return None
+    match = re.search(r"\d+", text)
+    if not match:
+        return None
+    page = int(match.group(0))
+    return page if 0 < page <= 500 else None
+
+
+def _build_segment_actions(
+    speech_intro: str,
+    trigger: str,
+    highlight_lines: list[int],
+    ppt_page: int | None,
+) -> list[dict[str, object]]:
+    """生成连贯教学动作指令：先播报口语讲稿，再触发板书 HTML 动画与代码高亮。"""
+    return [
+        {
+            "type": "speak",
+            "text": speech_intro,
+            "ppt_page": ppt_page,
+        },
+        {
+            "type": "animate",
+            "trigger": trigger,
+            "highlight_lines": highlight_lines,
+            "ppt_page": ppt_page,
+        },
+    ]
+
+
 def _sanitize_board_html(raw: str) -> str:
-    """移除脚本与事件处理器，保证 iframe 只渲染静态 HTML+CSS。"""
+    """移除危险标签与事件，并修复常见未闭合标签，防止 iframe 渲染白屏。"""
     cleaned = SCRIPT_TAG_PATTERN.sub("", raw or "")
+    cleaned = re.sub(
+        r"<(?:iframe|object|embed)\b[^>]*>[\s\S]*?</(?:iframe|object|embed)>",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"<(?:iframe|object|embed)\b[^>]*/?>",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     cleaned = EVENT_HANDLER_PATTERN.sub("", cleaned)
     cleaned = JAVASCRIPT_URL_PATTERN.sub("", cleaned).strip()
 
@@ -1157,6 +1212,19 @@ def _sanitize_board_html(raw: str) -> str:
             '<div style="font-size:20px;line-height:1.8;">'
             f"{html.escape(cleaned)}</div>"
         )
+        return cleaned[:12000]
+
+    # 修复模型截断导致的未闭合 <style> / <svg> 标签，防止吞掉后续正文造成白屏
+    open_styles = len(re.findall(r"<style\b[^>]*>", cleaned, flags=re.IGNORECASE))
+    close_styles = len(re.findall(r"</style\s*>", cleaned, flags=re.IGNORECASE))
+    if open_styles > close_styles:
+        cleaned += "</style>" * (open_styles - close_styles)
+
+    open_svgs = len(re.findall(r"<svg\b[^>]*>", cleaned, flags=re.IGNORECASE))
+    close_svgs = len(re.findall(r"</svg\s*>", cleaned, flags=re.IGNORECASE))
+    if open_svgs > close_svgs:
+        cleaned += "</svg>" * (open_svgs - close_svgs)
+
     return cleaned[:12000]
 
 
@@ -1205,13 +1273,24 @@ def _normalize_storyboard(items: list[object]) -> list[dict[str, object]]:
         html_code = _sanitize_board_html(str(item.get("html_code") or ""))
 
         if html_code and speech_intro and _is_meaningful_speech(speech_intro):
+            trigger = _normalize_trigger(
+                item.get("animation_trigger"), html_code
+            )
+            highlight_lines = _parse_highlight_lines(
+                item.get("highlight_lines")
+            )
+            ppt_page = _parse_ppt_page(item.get("ppt_page"))
+            trimmed_speech = speech_intro[:800]
             storyboard.append(
                 {
                     "segment_id": len(storyboard) + 1,
-                    "speech_intro": speech_intro[:800],
+                    "speech_intro": trimmed_speech,
                     "html_code": html_code,
-                    "animation_trigger": _normalize_trigger(
-                        item.get("animation_trigger"), html_code
+                    "animation_trigger": trigger,
+                    "ppt_page": ppt_page,
+                    "highlight_lines": highlight_lines,
+                    "actions": _build_segment_actions(
+                        trimmed_speech, trigger, highlight_lines, ppt_page
                     ),
                     "quiz": _normalize_quiz(item.get("quiz")),
                 }
@@ -1256,6 +1335,7 @@ def _normalize_storyboard(items: list[object]) -> list[dict[str, object]]:
                 "speech_intro": "",
                 "html_code": "",
                 "animation_trigger": "",
+                "ppt_page": _parse_ppt_page(item.get("ppt_page")),
                 "speech_text": opening[:800],
                 "board_content": board_content[:2000],
                 "highlight_lines": _parse_highlight_lines(

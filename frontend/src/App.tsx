@@ -92,11 +92,21 @@ interface StoryboardQuiz {
   explanation_guess: string
 }
 
+interface StoryboardAction {
+  type: 'speak' | 'animate'
+  text?: string
+  trigger?: string
+  highlight_lines?: number[]
+  ppt_page?: number | null
+}
+
 interface StoryboardSegment {
   segment_id: number
   speech_intro: string
   html_code: string
   animation_trigger: string
+  ppt_page?: number | null
+  actions?: StoryboardAction[]
   // 旧分镜兼容字段
   speech_text: string
   board_content: string
@@ -391,6 +401,20 @@ function normalizeQuiz(value: unknown): StoryboardQuiz | null {
   }
 }
 
+function normalizePptPage(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 500) {
+    return Math.floor(value)
+  }
+  if (typeof value === 'string') {
+    const match = value.match(/\d+/)
+    if (match) {
+      const parsed = Number.parseInt(match[0], 10)
+      if (parsed > 0 && parsed <= 500) return parsed
+    }
+  }
+  return null
+}
+
 function normalizeTrigger(value: unknown) {
   if (typeof value !== 'string') return 'reveal-1'
   const cleaned = value.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 60)
@@ -412,16 +436,29 @@ function normalizeStoryboard(value: unknown): StoryboardSegment[] {
         : ''
     const htmlCode =
       typeof record.html_code === 'string' ? record.html_code.trim() : ''
+    const pptPage = normalizePptPage(record.ppt_page)
 
     if (speechIntro && htmlCode) {
+      const trigger = normalizeTrigger(record.animation_trigger)
+      const highlightLines = normalizeHighlightLines(record.highlight_lines)
       segments.push({
         segment_id: segments.length + 1,
         speech_intro: speechIntro,
         html_code: htmlCode,
-        animation_trigger: normalizeTrigger(record.animation_trigger),
+        animation_trigger: trigger,
+        ppt_page: pptPage,
+        actions: [
+          { type: 'speak', text: speechIntro, ppt_page: pptPage },
+          {
+            type: 'animate',
+            trigger,
+            highlight_lines: highlightLines,
+            ppt_page: pptPage,
+          },
+        ],
         speech_text: '',
         board_content: '',
-        highlight_lines: [],
+        highlight_lines: highlightLines,
         step_by_step: [],
         quiz: normalizeQuiz(record.quiz),
       })
@@ -626,6 +663,7 @@ function App() {
   const [boardTrigger, setBoardTrigger] = useState<{
     key: number
     trigger: string
+    highlightLines?: number[]
   } | null>(null)
   const [isPreparing, setIsPreparing] = useState(false)
   const [prepareLine, setPrepareLine] = useState('')
@@ -669,6 +707,55 @@ function App() {
   const quizNextIndexRef = useRef<number | null>(null)
   const interruptContextRef = useRef('')
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
+  const boardAnimWaiterRef = useRef<{
+    key: number
+    resolve: () => void
+    timer: number
+  } | null>(null)
+
+  function clearBoardAnimWaiter() {
+    const waiter = boardAnimWaiterRef.current
+    if (!waiter) return
+    window.clearTimeout(waiter.timer)
+    boardAnimWaiterRef.current = null
+    waiter.resolve()
+  }
+
+  function handleBoardAnimationComplete(triggerKey: number) {
+    const waiter = boardAnimWaiterRef.current
+    if (waiter && waiter.key === triggerKey) {
+      clearBoardAnimWaiter()
+    }
+  }
+
+  function triggerBoardAnimationAndWait(
+    trigger: string,
+    session: number,
+    highlightLines?: number[],
+    fallbackMs = 2600,
+  ): Promise<void> {
+    clearBoardAnimWaiter()
+    return new Promise((resolve) => {
+      if (liveSessionRef.current !== session) {
+        resolve()
+        return
+      }
+      const key = Date.now() + Math.floor(Math.random() * 1000)
+      const timer = window.setTimeout(() => {
+        if (boardAnimWaiterRef.current?.key === key) {
+          boardAnimWaiterRef.current = null
+        }
+        resolve()
+      }, fallbackMs)
+
+      boardAnimWaiterRef.current = { key, resolve, timer }
+      setBoardTrigger({
+        key,
+        trigger: trigger || 'reveal-1',
+        highlightLines,
+      })
+    })
+  }
 
   const noteSegments = splitNoteSegments(result)
   const liveStoryboard = useMemo(
@@ -878,6 +965,7 @@ function App() {
   useEffect(() => {
     return () => {
       liveSessionRef.current += 1
+      clearBoardAnimWaiter()
       livePlaybackRef.current?.stop()
       recognitionRef.current?.abort()
     }
@@ -998,6 +1086,7 @@ function App() {
 
   function resetLiveSession(nextIndex = 0) {
     liveSessionRef.current += 1
+    clearBoardAnimWaiter()
     livePlaybackRef.current?.stop()
     livePlaybackRef.current = null
     recognitionRef.current?.abort()
@@ -1024,6 +1113,7 @@ function App() {
 
   function stopClass() {
     liveSessionRef.current += 1
+    clearBoardAnimWaiter()
     livePlaybackRef.current?.stop()
     livePlaybackRef.current = null
     recognitionRef.current?.abort()
@@ -1101,37 +1191,27 @@ function App() {
 
     if (liveSessionRef.current !== session) return
 
-    // 先说话，后写字：语音播完后再触发 iframe 内的 CSS 动画
-    window.setTimeout(() => {
-      if (liveSessionRef.current !== session) return
-      if (liveIndexRef.current !== segmentIndex) return
-      setBoardTrigger({
-        key: Date.now(),
-        trigger: segment.animation_trigger || 'reveal-1',
-      })
-    }, 220)
+    // 严格同步：语音播完后再下发板书动画与高亮行指令，等待 iframe 动画完成握手后再切换状态
+    await triggerBoardAnimationAndWait(
+      segment.animation_trigger || 'reveal-1',
+      session,
+      segment.highlight_lines,
+      2600,
+    )
+    if (liveSessionRef.current !== session) return
+    if (liveIndexRef.current !== segmentIndex) return
 
     if (segment.quiz) {
       prefetchTts(segment.quiz.explanation_correct)
       prefetchTts(segment.quiz.explanation_wrong)
       prefetchTts(segment.quiz.explanation_guess)
-      // 留出板书动画时间，再弹出随堂小测
-      window.setTimeout(() => {
-        if (liveSessionRef.current !== session) return
-        if (liveIndexRef.current !== segmentIndex) return
-        setQuizChoice(null)
-        setQuizVerdict(null)
-        setLiveState('quiz')
-      }, 2400)
+      setQuizChoice(null)
+      setQuizVerdict(null)
+      setLiveState('quiz')
       return
     }
 
-    // 等板书逐行“写”完，再允许学生点“听懂了”，避免讲到一半就跳走
-    window.setTimeout(() => {
-      if (liveSessionRef.current !== session) return
-      if (liveIndexRef.current !== segmentIndex) return
-      setLiveState('waiting')
-    }, 1600)
+    setLiveState('waiting')
   }
 
   function buildLectureContext() {
@@ -1335,18 +1415,14 @@ function App() {
 
     if (liveSessionRef.current !== session) return
 
-    window.setTimeout(() => {
-      if (liveSessionRef.current !== session) return
-      setBoardTrigger({
-        key: Date.now(),
-        trigger: segment.animation_trigger || 'reveal-1',
-      })
-    }, 220)
-
-    window.setTimeout(() => {
-      if (liveSessionRef.current !== session) return
-      setLiveState('waiting')
-    }, 1600)
+    await triggerBoardAnimationAndWait(
+      segment.animation_trigger || 'reveal-1',
+      session,
+      undefined,
+      2400,
+    )
+    if (liveSessionRef.current !== session) return
+    setLiveState('waiting')
   }
 
   /** 伴读举手：暂停原课堂，请主讲李老师针对薄弱点重新生成一页板书。 */
@@ -4008,6 +4084,8 @@ function App() {
                               : '补救板书'
                           }
                           label="补救板书"
+                          fallbackText={remedialBoard.speech_intro}
+                          onAnimationComplete={handleBoardAnimationComplete}
                           isActive={
                             liveState === 'playing' ||
                             liveState === 'explaining' ||
@@ -4022,6 +4100,10 @@ function App() {
                           trigger={boardTrigger}
                           segmentIndex={liveIndex}
                           focusLabel={liveFocus}
+                          pptPage={activeLiveSegment.ppt_page}
+                          highlightLines={activeLiveSegment.highlight_lines}
+                          fallbackText={activeLiveSegment.speech_intro}
+                          onAnimationComplete={handleBoardAnimationComplete}
                           isActive={
                             liveState === 'playing' ||
                             liveState === 'explaining' ||
