@@ -6,7 +6,10 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
 
 
 class Settings:
@@ -23,6 +26,29 @@ class Settings:
     DATABASE_URL: str = os.getenv(
         "DATABASE_URL",
         f"sqlite:///{(BASE_DIR / 'app.db').as_posix()}",
+    )
+
+    # 大模型路由与容错配置
+    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "gemini").strip().lower() or "gemini"
+    GEMINI_MODEL: str = (
+        os.getenv("GEMINI_MODEL", "gemini-4-hydrogen").strip()
+        or "gemini-4-hydrogen"
+    )
+    DEEPSEEK_MODEL: str = (
+        os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip() or "deepseek-chat"
+    )
+    DEEPSEEK_BASE_URL: str = (
+        os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip()
+        or "https://api.deepseek.com"
+    )
+    VISION_PROVIDER: str = os.getenv("VISION_PROVIDER", "").strip().lower()
+    LLM_FALLBACK_ENABLED: bool = os.getenv(
+        "LLM_FALLBACK_ENABLED", "true"
+    ).strip().lower() not in {"0", "false", "no", "off"}
+    LLM_MAX_RETRIES: int = max(1, int(os.getenv("LLM_MAX_RETRIES", "3")))
+    LLM_TIMEOUT: float = float(os.getenv("LLM_TIMEOUT", "90"))
+    LLM_STORYBOARD_TIMEOUT: float = float(
+        os.getenv("LLM_STORYBOARD_TIMEOUT", "240")
     )
 
     # 前端 Vite 开发服务器默认端口为 5173

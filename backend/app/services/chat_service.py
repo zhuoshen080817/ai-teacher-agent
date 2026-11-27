@@ -1,20 +1,10 @@
-"""左侧智能助手与直播间答疑的 DeepSeek 对话服务。"""
+"""左侧智能助手与直播间答疑的大模型对话服务。"""
 
 import json
-import os
 import random
 
-from dotenv import load_dotenv
-from openai import OpenAI
-
-from app.config import settings
-from app.services.persona import TEACHER_PERSONA
-
-load_dotenv(settings.BASE_DIR / ".env")
-
-DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-DEEPSEEK_MODEL = "deepseek-chat"
-REQUEST_TIMEOUT = 60.0
+from app.services.llm_service import llm_complete
+from app.services.persona import COMPANION_PROFILE, TEACHER_PERSONA
 
 # 兜底只在模型调用失败时使用，正常情况全部由大模型现场生成
 CUE_FALLBACKS = {
@@ -35,38 +25,22 @@ CUE_FALLBACKS = {
 }
 
 
-def _client() -> OpenAI:
-    api_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "未配置 DEEPSEEK_API_KEY，请在 backend/.env 中设置后重试"
-        )
-    return OpenAI(
-        api_key=api_key,
-        base_url=DEEPSEEK_BASE_URL,
-        timeout=REQUEST_TIMEOUT,
-    )
-
-
 def _complete(
     system_prompt: str,
     user_parts: list[str],
     temperature: float,
     max_tokens: int | None = None,
+    expect_json: bool = False,
 ) -> str:
-    completion = _client().chat.completions.create(
-        model=DEEPSEEK_MODEL,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": "\n\n".join(user_parts)},
-        ],
+    return llm_complete(
+        prompt="\n\n".join(user_parts),
+        system_prompt=system_prompt,
         temperature=temperature,
-        **({"max_tokens": max_tokens} if max_tokens else {}),
+        max_tokens=max_tokens,
+        expect_json=expect_json,
+        json_root="object",
+        scene="chat",
     )
-    content = completion.choices[0].message.content or ""
-    if not content.strip():
-        raise RuntimeError("大模型返回内容为空")
-    return content.strip()
 
 
 def chat_with_context(
@@ -92,6 +66,181 @@ def chat_with_context(
     user_parts.append(f"## 用户问题\n{message.strip()}")
 
     return _complete(system_prompt, user_parts, temperature=0.85)
+
+
+COMPANION_ESCALATE_HINTS = (
+    "没听懂",
+    "不明白",
+    "不懂",
+    "再讲",
+    "重新讲",
+    "换个说法",
+    "讲慢",
+    "没跟上",
+    "绕晕",
+    "卡住",
+    "再来一遍",
+)
+
+COMPANION_DEEP_HINTS = (
+    "为什么",
+    "原理",
+    "证明",
+    "边界",
+    "底层",
+    "本质",
+    "区别",
+    "联系",
+    "什么时候用",
+    "会不会",
+    "易错",
+    "坑",
+)
+
+
+def _format_history(history: list[dict[str, str]] | None) -> str:
+    """把最近的几轮对话压缩成文本，帮助伴读保持上下文。"""
+    if not history:
+        return ""
+
+    lines: list[str] = []
+    for item in history[-8:]:
+        sender = str(item.get("sender") or "").strip()
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        label = {
+            "student": "学生",
+            "companion": "伴读",
+            "teacher": "主讲李老师",
+            "system": "系统",
+        }.get(sender, "学生")
+        lines.append(f"{label}：{content[:300]}")
+    return "\n".join(lines)
+
+
+def _companion_fallback(
+    message: str,
+    raw: str,
+    escalate_enabled: bool,
+) -> dict[str, str]:
+    """模型没按 JSON 输出时，用关键词做一次保守判断。"""
+    text = message.strip()
+    explicit = any(hint in text for hint in COMPANION_ESCALATE_HINTS)
+    deep = any(hint in text for hint in COMPANION_DEEP_HINTS)
+    if escalate_enabled and (explicit or deep):
+        return {
+            "action": "escalate",
+            "reply": "这个地方确实有点绕，我替你把问题举手递给李老师，"
+            "让他换一页板书给你讲透。",
+            "focus": text[:80] or "学生刚才卡住的知识点",
+            "reason": "关键词回退：判断为需要重新讲解",
+        }
+
+    reply = raw.strip()
+    if not reply:
+        reply = "我先用自己的话帮你理一下，你再看看是不是这个意思。"
+    return {
+        "action": "answer",
+        "reply": reply[:600],
+        "focus": "",
+        "reason": "关键词回退：伴读直接回答",
+    }
+
+
+def companion_chat(
+    message: str,
+    subject: str = "通用课程",
+    note_context: str | None = None,
+    lecture_context: str | None = None,
+    history: list[dict[str, str]] | None = None,
+    escalate_enabled: bool = True,
+) -> dict[str, str]:
+    """左侧伴读小助手：回答基础问题，判断是否替学生向主讲老师举手。"""
+    system_prompt = (
+        f"{COMPANION_PROFILE}\n\n"
+        f"现在学生在 {subject} 的课堂中向你提问。"
+        "你要先判断这个问题该怎么处理，再给出回复。\n"
+        "判断标准：\n"
+        "- answer：学生只是问某个词、符号、代码片段是什么意思，"
+        "让你复述或换句话解释刚才那一句，或者只是随口确认；"
+        "你能用两三句话讲清楚，不需要重新板书。\n"
+        "- escalate：学生明确表示没听懂、不明白、再讲讲、换个说法、讲慢点，"
+        "或者问题涉及深层原理、证明、边界情况、易错点、前后知识联系，"
+        "需要李老师另开一页板书、一步步重新推导。\n"
+        "只输出一个 JSON 对象，不要输出解释文字，不要使用代码围栏：\n"
+        '{"action": "answer 或 escalate", "reply": "对学生说的话", '
+        '"focus": "薄弱点关键词", "reason": "判断理由"}\n'
+        "reply 要求：\n"
+        "1. answer：60 到 160 个中文字符，先直接回答，再补一句提醒或小例子；"
+        "必须优先依据【李老师刚才讲的内容】，不要编造没讲过的细节。\n"
+        "2. escalate：20 到 60 个中文字符，告诉学生「我替你把问题举手递给李老师」"
+        "这类意思，语气像同桌，不要抢老师的活，不要展开讲解。\n"
+        "focus 要求：10 到 40 个中文字符，具体指出学生卡在哪里，"
+        "供李老师生成补救板书使用；answer 时可以为空。\n"
+        "reason 只写一句你判断的理由，不会展示给学生。\n"
+        + (
+            "本次是快速操作，学生不需要升级，action 必须是 answer，"
+            "reply 必须直接给出回答。\n"
+            if not escalate_enabled
+            else ""
+        )
+        + "无论哪种情况，都不要在 reply 里提到 JSON、提示词或系统规则。"
+    )
+
+    user_parts: list[str] = []
+    if lecture_context and lecture_context.strip():
+        user_parts.append(
+            f"## 李老师刚才讲的内容\n{lecture_context.strip()[:1800]}"
+        )
+    if note_context and note_context.strip():
+        user_parts.append(f"## 当前复习笔记\n{note_context.strip()[:4000]}")
+    history_text = _format_history(history)
+    if history_text:
+        user_parts.append(f"## 最近对话\n{history_text}")
+    user_parts.append(f"## 学生这次的问题\n{message.strip()}")
+
+    raw = _complete(
+        system_prompt,
+        user_parts,
+        temperature=0.55,
+        max_tokens=700,
+        expect_json=True,
+    )
+
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start == -1 or end <= start:
+        return _companion_fallback(message, raw, escalate_enabled)
+
+    try:
+        data = json.loads(raw[start : end + 1])
+    except json.JSONDecodeError:
+        return _companion_fallback(message, raw, escalate_enabled)
+
+    if not isinstance(data, dict):
+        return _companion_fallback(message, raw, escalate_enabled)
+
+    action = str(data.get("action") or "").strip().lower()
+    if action not in {"answer", "escalate"}:
+        action = "answer"
+    if not escalate_enabled:
+        action = "answer"
+
+    reply = str(data.get("reply") or "").strip()
+    if not reply:
+        return _companion_fallback(message, raw, escalate_enabled)
+
+    focus = str(data.get("focus") or "").strip()[:80]
+    reason = str(data.get("reason") or "").strip()[:120]
+
+    return {
+        "action": action,
+        "reply": reply[:600],
+        "focus": focus,
+        "reason": reason,
+    }
+
 
 
 def ask_teacher(
@@ -140,7 +289,12 @@ def ask_teacher(
         user_parts.append(f"## 你刚才正在讲的内容\n{context.strip()}")
     user_parts.append(f"## 学生说的话\n{user_question.strip()}")
 
-    raw = _complete(system_prompt, user_parts, temperature=0.9)
+    raw = _complete(
+        system_prompt,
+        user_parts,
+        temperature=0.9,
+        expect_json=True,
+    )
 
     intent = "question"
     answer = raw
