@@ -51,6 +51,12 @@ class Settings:
         os.getenv("LLM_STORYBOARD_TIMEOUT", "240")
     )
 
+    # 长音频 ASR 并发分片池配置（默认 8 路并发，每片失败自动重试）
+    ASR_MAX_WORKERS: int = max(1, int(os.getenv("ASR_MAX_WORKERS", "8")))
+    ASR_CHUNK_MAX_RETRIES: int = max(
+        1, int(os.getenv("ASR_CHUNK_MAX_RETRIES", "2"))
+    )
+
     # 前端 Vite 开发服务器默认端口为 5173
     CORS_ORIGINS: list[str] = [
         "http://localhost:5173",

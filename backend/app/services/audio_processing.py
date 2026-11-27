@@ -8,8 +8,12 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import ExitStack
+from datetime import datetime
 from pathlib import Path
 
 import dashscope
@@ -35,8 +39,12 @@ ASR_MODEL = "paraformer-realtime-v2"
 TARGET_SAMPLE_RATE = 16000
 CHUNK_SECONDS = 5 * 60  # 每段 5 分钟
 FFMPEG_TIMEOUT = 30 * 60  # 单个文件转码切片最长 30 分钟
-# ASR 并发数：控制在 3-5，兼顾吞吐与 DashScope 限流
-ASR_MAX_WORKERS = 4
+# 全局 ASR 并发分片池：默认 8 路并发，可通过 ASR_MAX_WORKERS 调整
+ASR_MAX_WORKERS = settings.ASR_MAX_WORKERS
+ASR_CHUNK_MAX_RETRIES = settings.ASR_CHUNK_MAX_RETRIES
+_ASR_POOL_LOCK = threading.Lock()
+_ASR_POOL: ThreadPoolExecutor | None = None
+_ASR_DB_LOCK = threading.Lock()
 DEFAULT_SUBJECT = "通用课程"
 STORYBOARD_SEGMENT_LIMIT = 12
 STORYBOARD_MIN_SEGMENTS = 8
@@ -259,55 +267,213 @@ def _split_with_ffmpeg(audio_path: Path, work_dir: Path) -> list[Path]:
     return chunks
 
 
+def get_asr_pool() -> ThreadPoolExecutor:
+    """获取全局共享的 8 路 ASR 分片识别线程池。"""
+    global _ASR_POOL
+    with _ASR_POOL_LOCK:
+        if _ASR_POOL is None:
+            _ASR_POOL = ThreadPoolExecutor(
+                max_workers=max(1, ASR_MAX_WORKERS),
+                thread_name_prefix="asr-pool",
+            )
+        return _ASR_POOL
+
+
+def shutdown_asr_pool() -> None:
+    """应用退出时优雅关闭全局 ASR 线程池。"""
+    global _ASR_POOL
+    with _ASR_POOL_LOCK:
+        if _ASR_POOL is not None:
+            _ASR_POOL.shutdown(wait=False, cancel_futures=False)
+            _ASR_POOL = None
+
+
+def _compose_transcript_from_chunks(
+    chunks_map: dict[str, dict[str, object]],
+) -> str:
+    """按文件号与切片序号稳定拼接已识别成功的文本。"""
+    grouped: dict[int, list[tuple[int, str]]] = {}
+    for item in chunks_map.values():
+        if not isinstance(item, dict):
+            continue
+        if item.get("status") != "done":
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        file_index = int(item.get("file_index") or 0)
+        chunk_index = int(item.get("chunk_index") or 0)
+        grouped.setdefault(file_index, []).append((chunk_index, text))
+
+    file_sections: list[str] = []
+    for file_index in sorted(grouped):
+        parts = [
+            text
+            for _, text in sorted(grouped[file_index], key=lambda pair: pair[0])
+        ]
+        joined = "\n".join(parts).strip()
+        if joined:
+            file_sections.append(joined)
+    return "\n\n".join(file_sections).strip()
+
+
+def _load_asr_checkpoint(
+    task_id: int,
+) -> tuple[str, dict[str, dict[str, object]], bool]:
+    """读取任务已落库的 ASR 断点信息，支持失败后跳过已识别分片。"""
+    try:
+        with SessionLocal() as db:
+            task = db.get(Task, task_id)
+            if task is None:
+                return "", {}, False
+            saved_text = (task.transcribed_text or "").strip()
+            raw_chunks = task.asr_chunks
+    except Exception:  # noqa: BLE001 读取断点失败时从头识别
+        logger.warning("任务 %s 读取 ASR 断点失败", task_id, exc_info=True)
+        return "", {}, False
+
+    if not raw_chunks:
+        return saved_text, {}, False
+
+    try:
+        payload = json.loads(raw_chunks)
+    except (json.JSONDecodeError, TypeError):
+        return saved_text, {}, False
+
+    if not isinstance(payload, dict):
+        return saved_text, {}, False
+
+    raw_map = payload.get("chunks")
+    chunks_map: dict[str, dict[str, object]] = {}
+    if isinstance(raw_map, dict):
+        for key, value in raw_map.items():
+            if isinstance(key, str) and isinstance(value, dict):
+                chunks_map[key] = dict(value)
+
+    completed = bool(payload.get("completed"))
+    return saved_text, chunks_map, completed
+
+
+def _persist_asr_checkpoint(
+    task_id: int,
+    *,
+    chunks_map: dict[str, dict[str, object]],
+    total_chunks: int,
+    completed: bool = False,
+    progress: int | None = None,
+    status_message: str | None = None,
+) -> str:
+    """将最新分片转写结果实时落库（线程安全短事务），防止单点故障丢进度。"""
+    merged_text = _compose_transcript_from_chunks(chunks_map)
+    done_count = sum(
+        1 for item in chunks_map.values() if item.get("status") == "done"
+    )
+    failed_count = sum(
+        1 for item in chunks_map.values() if item.get("status") == "failed"
+    )
+    payload = {
+        "version": 1,
+        "completed": completed,
+        "total_chunks": total_chunks,
+        "done_chunks": done_count,
+        "failed_chunks": failed_count,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "chunks": chunks_map,
+    }
+
+    with _ASR_DB_LOCK:
+        try:
+            with SessionLocal() as db:
+                task = db.get(Task, task_id)
+                if task is None:
+                    return merged_text
+                task.asr_chunks = json.dumps(payload, ensure_ascii=False)
+                if merged_text:
+                    task.transcribed_text = merged_text
+                if progress is not None:
+                    task.progress = max(0, min(100, int(progress)))
+                if status_message is not None:
+                    task.status_message = status_message[:255]
+                db.commit()
+        except Exception:  # noqa: BLE001 落库异常记录日志不中断正在进行的识别
+            logger.warning("任务 %s 实时写入 ASR 分片失败", task_id, exc_info=True)
+
+    return merged_text
+
+
 def _transcribe_chunk(
     chunk_path: Path,
     api_key: str,
     index: int,
     total: int,
 ) -> str:
-    """对单个 16kHz WAV 切片调用 paraformer-realtime-v2。"""
-    print(f"[ASR] 第 {index}/{total} 段开始识别：{chunk_path.name}")
+    """对单个 16kHz WAV 切片调用 paraformer-realtime-v2，失败自动退避重试。"""
+    attempts = max(1, ASR_CHUNK_MAX_RETRIES)
+    last_exc: Exception | None = None
 
-    client = dashscope.Client(api_key=api_key)
-    sentences: list[str] = []
-    last_partial = ""
+    for attempt in range(1, attempts + 1):
+        print(
+            f"[ASR] 第 {index}/{total} 段开始识别（第 {attempt}/{attempts} 次）："
+            f"{chunk_path.name}"
+        )
 
-    try:
-        for event in client.audio.asr.recognize_file(
-            str(chunk_path.resolve()),
-            model=ASR_MODEL,
-            format="wav",
-            sample_rate=TARGET_SAMPLE_RATE,
-            parameters={"language_hints": ["zh", "en"]},
-        ):
-            payload = event.get("payload") or {}
-            sentence = (payload.get("output") or {}).get("sentence") or {}
+        client = dashscope.Client(api_key=api_key)
+        sentences: list[str] = []
+        last_partial = ""
 
-            text = (sentence.get("text") or "").strip()
-            if not text or sentence.get("heartbeat"):
+        try:
+            for event in client.audio.asr.recognize_file(
+                str(chunk_path.resolve()),
+                model=ASR_MODEL,
+                format="wav",
+                sample_rate=TARGET_SAMPLE_RATE,
+                parameters={"language_hints": ["zh", "en"]},
+            ):
+                payload = event.get("payload") or {}
+                sentence = (payload.get("output") or {}).get("sentence") or {}
+
+                text = (sentence.get("text") or "").strip()
+                if not text or sentence.get("heartbeat"):
+                    continue
+
+                if sentence.get("sentence_end"):
+                    sentences.append(text)
+                    last_partial = ""
+                else:
+                    last_partial = text
+        except Exception as exc:  # noqa: BLE001 瞬时错误按次数重试
+            last_exc = exc
+            if attempt < attempts:
+                delay = min(4.0, 1.0 * (2 ** (attempt - 1)))
+                logger.warning(
+                    "[ASR] 第 %s/%s 段识别失败（%s），%.1fs 后重试",
+                    index,
+                    total,
+                    exc,
+                    delay,
+                )
+                time.sleep(delay)
                 continue
+            raise RuntimeError(
+                f"第 {index}/{total} 段语音识别失败：{exc}"
+            ) from exc
 
-            if sentence.get("sentence_end"):
-                sentences.append(text)
-                last_partial = ""
-            else:
-                last_partial = text
-    except Exception as exc:
-        raise RuntimeError(f"第 {index}/{total} 段语音识别失败：{exc}") from exc
+        if not sentences and last_partial:
+            sentences.append(last_partial)
 
-    if not sentences and last_partial:
-        sentences.append(last_partial)
+        transcribed_text = " ".join(sentences).strip()
+        if not transcribed_text:
+            print(f"[ASR] 第 {index}/{total} 段未识别到有效文本，跳过")
+            return ""
 
-    transcribed_text = " ".join(sentences).strip()
-    if not transcribed_text:
-        print(f"[ASR] 第 {index}/{total} 段未识别到有效文本，跳过")
-        return ""
+        print(
+            f"[ASR] 第 {index}/{total} 段识别完成："
+            f"{len(transcribed_text)} 个字符"
+        )
+        return transcribed_text
 
-    print(
-        f"[ASR] 第 {index}/{total} 段识别完成："
-        f"{len(transcribed_text)} 个字符"
-    )
-    return transcribed_text
+    assert last_exc is not None
+    raise RuntimeError(f"第 {index}/{total} 段语音识别失败：{last_exc}") from last_exc
 
 
 def _transcribe_chunks(
@@ -315,7 +481,7 @@ def _transcribe_chunks(
     api_key: str,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> str:
-    """并发识别切片（最多 ASR_MAX_WORKERS 个），按原始顺序合并文本。"""
+    """兼容辅助函数：使用全局 8 路分片池并发识别切片并按顺序合并。"""
     total = len(chunks)
     if total == 0:
         raise RuntimeError("音频切分后没有可识别的片段")
@@ -328,38 +494,32 @@ def _transcribe_chunks(
             raise RuntimeError("该音频的所有分段均未识别出有效文本")
         return text
 
-    workers = min(ASR_MAX_WORKERS, total)
-    print(
-        f"[ASR] 共 {total} 个切片，启用 {workers} 个并发识别"
-    )
+    pool = get_asr_pool()
+    print(f"[ASR] 共 {total} 个切片，提交全局 {ASR_MAX_WORKERS} 路分片池并发识别")
 
     results: dict[int, str] = {}
     done = 0
+    future_map = {
+        pool.submit(
+            _transcribe_chunk, chunk_path, api_key, index, total
+        ): index
+        for index, chunk_path in enumerate(chunks, start=1)
+    }
 
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        future_map = {
-            executor.submit(
-                _transcribe_chunk, chunk_path, api_key, index, total
-            ): index
-            for index, chunk_path in enumerate(chunks, start=1)
-        }
+    for future in as_completed(future_map):
+        index = future_map[future]
+        done += 1
+        if on_progress:
+            on_progress(done, total)
+        try:
+            text = future.result()
+        except Exception as exc:  # noqa: BLE001 单段失败不影响其他片段
+            logger.exception("[ASR] 第 %s/%s 段识别失败，已跳过", index, total)
+            print(f"[ASR] 第 {index}/{total} 段识别失败，已跳过：{exc}")
+            continue
 
-        for future in as_completed(future_map):
-            index = future_map[future]
-            done += 1
-            if on_progress:
-                on_progress(done, total)
-            try:
-                text = future.result()
-            except Exception as exc:  # noqa: BLE001 单段失败不影响其他片段
-                logger.exception(
-                    "[ASR] 第 %s/%s 段识别失败，已跳过", index, total
-                )
-                print(f"[ASR] 第 {index}/{total} 段识别失败，已跳过：{exc}")
-                continue
-
-            if text:
-                results[index] = text
+        if text:
+            results[index] = text
 
     parts = [results[index] for index in sorted(results)]
     transcribed_text = "\n".join(parts).strip()
@@ -380,7 +540,7 @@ def _transcribe(
     on_progress: Callable[[int, int], None] | None = None,
     file_label: str = "",
 ) -> str:
-    """完整音频管道：ffmpeg 转码切片 → 逐段识别。"""
+    """完整单文件音频管道：ffmpeg 转码切片 → 全局分片池识别。"""
     if not audio_path.exists():
         raise RuntimeError(f"音频文件不存在：{audio_path}")
 
@@ -407,78 +567,234 @@ def _transcribe_files(
     api_key: str,
     task_id: int,
 ) -> str:
-    """依次处理每个音频文件，单个文件失败时跳过，最后合并文本。"""
-    total = len(audio_paths)
-    file_texts: list[str] = []
-    errors: list[str] = []
-
-    print(f"[BATCH] 任务 {task_id} 开始处理，共 {total} 个音频文件")
-
-    for index, audio_path in enumerate(audio_paths, start=1):
+    """跨文件展平切片 + 全局 8 路并发识别 + 实时落库断点续传。"""
+    saved_text, chunks_map, already_completed = _load_asr_checkpoint(task_id)
+    if already_completed and saved_text:
         print(
-            f"[BATCH] 第 {index}/{total} 个音频开始处理："
-            f"{audio_path.name}"
+            f"[ASR] 任务 {task_id} 命中已落库完整转写（{len(saved_text)} 字符），"
+            "跳过转码与识别直接进入下一阶段"
         )
+        _update_task_progress(
+            task_id,
+            50,
+            "已复用落库转写文本，跳过重复识别…",
+        )
+        return saved_text
 
-        # 识别阶段整体映射到 12% - 50%
-        file_base = 12 + (index - 1) * (38 / total)
-        file_span = 38 / total
-        file_label = f"第 {index}/{total} 个文件" if total > 1 else ""
+    total_files = len(audio_paths)
+    errors: list[str] = []
+    print(f"[BATCH] 任务 {task_id} 开始处理，共 {total_files} 个音频文件")
 
-        def on_progress(
-            done: int,
-            chunk_total: int,
-            base: float = file_base,
-            span: float = file_span,
-            label: str = file_label,
-        ) -> None:
-            percent = int(base + span * done / max(1, chunk_total))
-            prefix = f"{label} · " if label else ""
+    with ExitStack() as stack:
+        # 先对所有音频完成切片，再统一投入全局 8 路分片池实现跨文件并发
+        chunk_specs: list[tuple[str, int, int, str, Path]] = []
+        for file_index, audio_path in enumerate(audio_paths, start=1):
+            label = (
+                f"第 {file_index}/{total_files} 个文件 · "
+                if total_files > 1
+                else ""
+            )
             _update_task_progress(
                 task_id,
-                percent,
-                f"{prefix}正在识别音频（{done}/{chunk_total} 段）…",
+                6 + int(6 * (file_index - 1) / max(1, total_files)),
+                f"{label}正在转码并切片：{audio_path.name}",
+            )
+            try:
+                temp_dir = stack.enter_context(
+                    tempfile.TemporaryDirectory(
+                        prefix=f"classroom_task_{task_id}_f{file_index}_"
+                    )
+                )
+                chunks = _split_with_ffmpeg(audio_path, Path(temp_dir))
+            except Exception as exc:  # noqa: BLE001 单文件转码失败不影响其余音频
+                errors.append(str(exc))
+                logger.exception(
+                    "[BATCH] 第 %s/%s 个音频切片失败，已跳过",
+                    file_index,
+                    total_files,
+                )
+                print(
+                    f"[BATCH] 第 {file_index}/{total_files} 个音频切片失败，已跳过：{exc}"
+                )
+                continue
+
+            for chunk_index, chunk_path in enumerate(chunks, start=1):
+                chunk_key = f"{file_index:03d}_{chunk_index:04d}"
+                chunk_specs.append(
+                    (
+                        chunk_key,
+                        file_index,
+                        chunk_index,
+                        audio_path.name,
+                        chunk_path,
+                    )
+                )
+
+        total_chunks = len(chunk_specs)
+        if total_chunks == 0:
+            if errors:
+                raise RuntimeError(
+                    "所有音频文件均未能完成转码切片，任务失败；"
+                    f"首个错误：{errors[0]}"
+                )
+            raise RuntimeError("音频切分后没有可识别的片段")
+
+        # 初始化或复用断点记录
+        pending_specs: list[tuple[int, str, int, int, str, Path]] = []
+        completed_count = 0
+        for seq, (
+            chunk_key,
+            file_index,
+            chunk_index,
+            filename,
+            chunk_path,
+        ) in enumerate(chunk_specs, start=1):
+            existing = chunks_map.get(chunk_key)
+            if (
+                existing
+                and existing.get("status") == "done"
+                and str(existing.get("text") or "").strip()
+            ):
+                completed_count += 1
+                continue
+
+            chunks_map[chunk_key] = {
+                "file_index": file_index,
+                "chunk_index": chunk_index,
+                "filename": filename,
+                "status": "pending",
+                "text": "",
+                "error": "",
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            pending_specs.append(
+                (seq, chunk_key, file_index, chunk_index, filename, chunk_path)
             )
 
-        try:
-            text = _transcribe(
-                audio_path,
-                api_key,
-                task_id,
-                on_progress=on_progress,
-                file_label=file_label,
-            )
-        except Exception as exc:  # noqa: BLE001 单个音频失败不影响其他音频
-            errors.append(str(exc))
-            logger.exception(
-                "[BATCH] 第 %s/%s 个音频处理失败，已跳过",
-                index,
-                total,
-            )
-            print(f"[BATCH] 第 {index}/{total} 个音频处理失败，已跳过：{exc}")
-            continue
-
-        if not text.strip():
-            print(f"[BATCH] 第 {index}/{total} 个音频无有效文本，跳过")
-            continue
-
-        file_texts.append(text.strip())
-        print(
-            f"[BATCH] 第 {index}/{total} 个音频处理完成："
-            f"{len(text.strip())} 个字符"
+        resumed_note = (
+            f"（复用断点 {completed_count} 段）" if completed_count > 0 else ""
+        )
+        _persist_asr_checkpoint(
+            task_id,
+            chunks_map=chunks_map,
+            total_chunks=total_chunks,
+            completed=False,
+            progress=12 + int(38 * completed_count / total_chunks),
+            status_message=(
+                f"共 {total_chunks} 个音频分片{resumed_note}，"
+                f"启动 {min(ASR_MAX_WORKERS, max(1, len(pending_specs)))} 路并发识别…"
+            ),
         )
 
-    if not file_texts:
+        if pending_specs:
+            pool = get_asr_pool()
+            print(
+                f"[ASR] 任务 {task_id} 提交 {len(pending_specs)}/{total_chunks} 个分片"
+                f"至全局 {ASR_MAX_WORKERS} 路并发池{resumed_note}"
+            )
+            future_map = {
+                pool.submit(
+                    _transcribe_chunk,
+                    chunk_path,
+                    api_key,
+                    seq,
+                    total_chunks,
+                ): (chunk_key, file_index, chunk_index, filename)
+                for (
+                    seq,
+                    chunk_key,
+                    file_index,
+                    chunk_index,
+                    filename,
+                    chunk_path,
+                ) in pending_specs
+            }
+
+            processed_count = completed_count
+            for future in as_completed(future_map):
+                chunk_key, file_index, chunk_index, filename = future_map[
+                    future
+                ]
+                processed_count += 1
+                now_iso = datetime.now().isoformat(timespec="seconds")
+
+                try:
+                    text = future.result()
+                    if text.strip():
+                        chunks_map[chunk_key] = {
+                            "file_index": file_index,
+                            "chunk_index": chunk_index,
+                            "filename": filename,
+                            "status": "done",
+                            "text": text.strip(),
+                            "error": "",
+                            "updated_at": now_iso,
+                        }
+                    else:
+                        chunks_map[chunk_key] = {
+                            "file_index": file_index,
+                            "chunk_index": chunk_index,
+                            "filename": filename,
+                            "status": "done",
+                            "text": "",
+                            "error": "",
+                            "updated_at": now_iso,
+                        }
+                except Exception as exc:  # noqa: BLE001 单片失败落库标记，保留断点
+                    errors.append(str(exc))
+                    logger.exception(
+                        "[ASR] 分片 %s 识别失败，已落库标记待重试", chunk_key
+                    )
+                    chunks_map[chunk_key] = {
+                        "file_index": file_index,
+                        "chunk_index": chunk_index,
+                        "filename": filename,
+                        "status": "failed",
+                        "text": "",
+                        "error": str(exc)[:300],
+                        "updated_at": now_iso,
+                    }
+
+                percent = 12 + int(38 * processed_count / total_chunks)
+                _persist_asr_checkpoint(
+                    task_id,
+                    chunks_map=chunks_map,
+                    total_chunks=total_chunks,
+                    completed=False,
+                    progress=percent,
+                    status_message=(
+                        f"正在并发识别音频（{processed_count}/{total_chunks} 段，已实时存档）…"
+                    ),
+                )
+
+    final_text = _compose_transcript_from_chunks(chunks_map)
+    if not final_text:
         if errors:
             raise RuntimeError(
-                "所有音频文件均未识别出有效文本，任务失败；"
+                "所有音频分片均未识别出有效文本，任务失败；"
                 f"首个错误：{errors[0]}"
             )
-        raise RuntimeError("所有音频文件均未识别出有效文本，任务失败")
+        raise RuntimeError("所有音频分片均未识别出有效文本，任务失败")
 
-    final_text = "\n\n".join(file_texts)
+    has_failed = any(
+        item.get("status") == "failed" for item in chunks_map.values()
+    )
+    _persist_asr_checkpoint(
+        task_id,
+        chunks_map=chunks_map,
+        total_chunks=total_chunks,
+        completed=not has_failed,
+        progress=50,
+        status_message="音频识别完成并已持久化存档",
+    )
+
+    done_with_text = sum(
+        1
+        for item in chunks_map.values()
+        if item.get("status") == "done" and str(item.get("text") or "").strip()
+    )
     print(
-        f"[BATCH] 音频合并完成：有效 {len(file_texts)}/{total} 个，"
+        f"[BATCH] 音频并发识别合并完成：有效分片 {done_with_text}/{total_chunks}，"
         f"总计 {len(final_text)} 个字符"
     )
     return final_text

@@ -4,13 +4,14 @@ import json
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
 from app.models.task import Task
+from app.services.audio_processing import process_audio_task
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,23 @@ def list_tasks(
     ]
 
 
+def _parse_asr_summary(raw: str | None) -> dict[str, object] | None:
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {
+        "completed": bool(data.get("completed")),
+        "total_chunks": int(data.get("total_chunks") or 0),
+        "done_chunks": int(data.get("done_chunks") or 0),
+        "failed_chunks": int(data.get("failed_chunks") or 0),
+    }
+
+
 @router.get("/task/{task_id}")
 def get_task(task_id: int, db: Session = Depends(get_db)) -> dict[str, object]:
     task = db.get(Task, task_id)
@@ -112,7 +130,40 @@ def get_task(task_id: int, db: Session = Depends(get_db)) -> dict[str, object]:
         "subject": task.subject,
         "progress": task.progress,
         "status_message": task.status_message,
+        "has_transcript": bool((task.transcribed_text or "").strip()),
+        "asr_summary": _parse_asr_summary(task.asr_chunks),
         "result": task.result,
         "storyboard": _parse_storyboard(task.storyboard),
         "created_at": task.created_at.isoformat(),
+    }
+
+
+@router.post("/task/{task_id}/retry")
+def retry_task(
+    task_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """基于已落库的 ASR 分片断点重试失败或中断的任务，避免重复转写。"""
+    task = db.get(Task, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if task.status == "completed":
+        return {
+            "task_id": task.id,
+            "status": task.status,
+            "restarted": False,
+            "message": "任务已完成，无需重试",
+        }
+
+    task.status = "pending"
+    task.status_message = "正在从已存档断点继续处理…"
+    db.commit()
+
+    background_tasks.add_task(process_audio_task, task.id)
+    return {
+        "task_id": task.id,
+        "status": task.status,
+        "restarted": True,
+        "asr_summary": _parse_asr_summary(task.asr_chunks),
     }

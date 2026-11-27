@@ -17,6 +17,7 @@ from app.api import api_router
 from app.config import settings
 from app.database import Base, engine, ensure_task_columns
 from app import models  # noqa: F401  确保模型已注册到 Base.metadata
+from app.services.audio_processing import shutdown_asr_pool
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,7 +32,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
     ensure_task_columns()
-    yield
+    try:
+        yield
+    finally:
+        shutdown_asr_pool()
 
 
 app = FastAPI(title=settings.PROJECT_NAME, lifespan=lifespan)

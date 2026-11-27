@@ -23,6 +23,8 @@ class Task(Base):
     )
     ppt_context: Mapped[str | None] = mapped_column(Text, nullable=True)
     image_context: Mapped[str | None] = mapped_column(Text, nullable=True)
+    transcribed_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    asr_chunks: Mapped[str | None] = mapped_column(Text, nullable=True)
     storyboard: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="pending", server_default="pending"
