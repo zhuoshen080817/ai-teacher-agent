@@ -1,7 +1,25 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  type DragEvent,
+} from 'react'
 import LectureBoard from './components/LectureBoard'
 import DynamicBoard from './components/DynamicBoard'
 import MarkdownView from './components/MarkdownView'
+import { audioBus } from './lib/audioBus'
+import {
+  initialLiveState,
+  isLiveActiveState,
+  isLiveBusyState,
+  liveReducer,
+  type AgentCommand,
+  type LiveState,
+  type RemedialMode,
+  type RemedialSegment,
+} from './lib/liveReducer'
 import {
   EXPLAINING_LINES,
   EXPLAIN_ERROR_LINES,
@@ -20,8 +38,7 @@ import {
   TTS_ERROR_LINES,
   pickLine,
 } from './lib/teacherLines'
-import { playTts, prefetchTts, setTtsSpeed } from './lib/tts'
-import type { TtsPlayback } from './lib/tts'
+import { prefetchTts, setTtsSpeed } from './lib/tts'
 import { uploadApiJson, uploadFilesInChunks } from './lib/upload'
 import type { UploadProgress } from './lib/upload'
 
@@ -41,34 +58,14 @@ const RECOGNITION_TIMEOUT = 18000
 type ConnectionStatus = 'loading' | 'connected' | 'error'
 type Phase = 'idle' | 'uploading' | 'processing' | 'completed' | 'failed' | 'error'
 type CopyState = 'idle' | 'copied' | 'error'
-type LiveState =
-  | 'idle'
-  | 'playing'
-  | 'waiting'
-  | 'quiz'
-  | 'quiz-feedback'
-  | 'paused'
-  | 'explaining'
-  | 'interrupting'
-  | 'listening'
-  | 'thinking'
-  | 'resuming'
-  | 'ended'
 type ChatRole = 'user' | 'assistant'
 type ChatAgent = 'companion' | 'teacher' | 'system'
-type RemedialMode = 'companion' | 'quiz'
 
 interface ChatMessage {
   id: string
   role: ChatRole
   agent: ChatAgent
   content: string
-}
-
-interface RemedialSegment {
-  speech_intro: string
-  html_code: string
-  animation_trigger: string
 }
 
 interface SelectedImage {
@@ -610,7 +607,6 @@ function App() {
     null,
   )
   const [interruptInput, setInterruptInput] = useState('')
-  const [showInterruptInput, setShowInterruptInput] = useState(false)
   const [mockLoading, setMockLoading] = useState(false)
 
   const [history, setHistory] = useState<TaskSummary[]>([])
@@ -628,16 +624,71 @@ function App() {
   ])
   const [chatInput, setChatInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
-  const [isEscalating, setIsEscalating] = useState(false)
-  const [companionRaised, setCompanionRaised] = useState(false)
-  const [companionFocus, setCompanionFocus] = useState('')
-  const [remedialBoard, setRemedialBoard] = useState<RemedialSegment | null>(
-    null,
-  )
-  const [remedialActive, setRemedialActive] = useState(false)
-  const [remedialKey, setRemedialKey] = useState(0)
-  const [remedialMode, setRemedialMode] =
-    useState<RemedialMode>('companion')
+
+  // 课堂有限状态机（useReducer 统一管理授课/打断/补救/测验/字幕，消除分散状态竞争）
+  const [live, dispatchLive] = useReducer(liveReducer, initialLiveState)
+  const liveRef = useRef(live)
+  liveRef.current = live
+
+  const {
+    liveState,
+    liveIndex,
+    liveStepIndex,
+    liveCaption,
+    liveError,
+    liveFocus,
+    liveHighlightLines,
+    boardTrigger,
+    isPreparing,
+    prepareLine,
+    showInterruptInput,
+    quizChoice,
+    quizVerdict,
+    isEscalating,
+    companionRaised,
+    companionFocus,
+    remedialBoard,
+    remedialActive,
+    remedialKey,
+    remedialMode,
+  } = live
+
+  const setLiveState = (next: LiveState) =>
+    dispatchLive({ type: 'SET_STATE', liveState: next })
+  const setLiveCaption = (caption: string) =>
+    dispatchLive({ type: 'SET_CAPTION', caption })
+  const setLiveError = (error: string) =>
+    dispatchLive({ type: 'SET_ERROR', error })
+  const setLiveFocus = (focus: string) =>
+    dispatchLive({ type: 'SET_FOCUS', focus })
+  const setLiveHighlightLines = (lines: number[]) =>
+    dispatchLive({ type: 'SET_HIGHLIGHT_LINES', lines })
+  const setBoardTrigger = (
+    trigger: { key: number; trigger: string; highlightLines?: number[] } | null,
+  ) => dispatchLive({ type: 'SET_BOARD_TRIGGER', trigger })
+  const setIsPreparing = (value: boolean) =>
+    dispatchLive({ type: 'SET_PREPARING', isPreparing: value })
+  const setQuizChoice = (choice: string | null) =>
+    dispatchLive({
+      type: 'SET_QUIZ_STATE',
+      choice,
+      verdict: liveRef.current.quizVerdict,
+    })
+  const setQuizVerdict = (verdict: 'correct' | 'wrong' | null) =>
+    dispatchLive({
+      type: 'SET_QUIZ_STATE',
+      choice: liveRef.current.quizChoice,
+      verdict,
+    })
+  const setShowInterruptInput = (show: boolean) =>
+    dispatchLive({ type: 'SET_SHOW_INTERRUPT_INPUT', show })
+
+  useEffect(() => {
+    return audioBus.subscribe((snapshot) => {
+      setSpeakingMessageId(snapshot.speakingMessageId)
+    })
+  }, [])
+
   const [favorites, setFavorites] = useState<FavoriteItem[]>([])
   const [favoritesOpen, setFavoritesOpen] = useState(false)
   const [favoritesLoading, setFavoritesLoading] = useState(false)
@@ -653,24 +704,6 @@ function App() {
   } | null>(null)
 
   const [storyboard, setStoryboard] = useState<StoryboardSegment[]>([])
-  const [liveIndex, setLiveIndex] = useState(0)
-  const [liveStepIndex, setLiveStepIndex] = useState(-1)
-  const [liveState, setLiveState] = useState<LiveState>('idle')
-  const [liveCaption, setLiveCaption] = useState('')
-  const [liveError, setLiveError] = useState('')
-  const [liveFocus, setLiveFocus] = useState('')
-  const [liveHighlightLines, setLiveHighlightLines] = useState<number[]>([])
-  const [boardTrigger, setBoardTrigger] = useState<{
-    key: number
-    trigger: string
-    highlightLines?: number[]
-  } | null>(null)
-  const [isPreparing, setIsPreparing] = useState(false)
-  const [prepareLine, setPrepareLine] = useState('')
-  const [quizChoice, setQuizChoice] = useState<string | null>(null)
-  const [quizVerdict, setQuizVerdict] = useState<'correct' | 'wrong' | null>(
-    null,
-  )
   const [referenceAudio, setReferenceAudio] = useState<File | null>(null)
   const [largeFileHint, setLargeFileHint] = useState('')
   const [dragTarget, setDragTarget] = useState<
@@ -687,11 +720,9 @@ function App() {
     }
   }, [])
   const liveSessionRef = useRef(0)
-  const livePlaybackRef = useRef<TtsPlayback | null>(null)
   const liveIndexRef = useRef(0)
   const liveStepRef = useRef(-1)
   const prepareStartedAtRef = useRef(0)
-  const chatPlaybackRef = useRef<TtsPlayback | null>(null)
   const ttsSpeedRef = useRef(1)
   const resumePointRef = useRef<{
     index: number
@@ -782,15 +813,8 @@ function App() {
       ? remedialBoard?.html_code
       : activeLiveSegment?.html_code,
   )
-  const isLiveBusy =
-    liveState === 'playing' ||
-    liveState === 'quiz-feedback' ||
-    liveState === 'explaining' ||
-    liveState === 'interrupting' ||
-    liveState === 'listening' ||
-    liveState === 'thinking' ||
-    liveState === 'resuming'
-  const isLiveActive = liveState !== 'idle' && liveState !== 'ended'
+  const isLiveBusy = isLiveBusyState(liveState)
+  const isLiveActive = isLiveActiveState(liveState)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -913,45 +937,37 @@ function App() {
     return lastStop > limit * 0.6 ? slice.slice(0, lastStop + 1) : slice
   }
 
-  /** 左侧聊天回答自动语音播报；直播正在播放时先暂停直播。 */
+  /** 左侧聊天回答自动语音播报；经由 AudioBus 单一总线独占通道，直播播放时先原子暂停。 */
   async function speakChatReply(text: string, messageId: string) {
     if (!text.trim()) return
 
+    const currentState = liveRef.current.liveState
     const shouldPauseLive =
-      Boolean(livePlaybackRef.current) ||
-      liveState === 'playing' ||
-      liveState === 'explaining' ||
-      liveState === 'resuming'
+      audioBus.isChannelPlaying('teacher') ||
+      currentState === 'playing' ||
+      currentState === 'explaining' ||
+      currentState === 'resuming'
 
     if (shouldPauseLive) {
       resumePointRef.current = {
         index: liveIndexRef.current,
         step: liveStepRef.current,
-        remedial: remedialActive,
+        remedial: liveRef.current.remedialActive,
       }
       liveSessionRef.current += 1
-      livePlaybackRef.current?.stop()
-      livePlaybackRef.current = null
+      clearBoardAnimWaiter()
+      audioBus.stopAll()
       setLiveState('paused')
     }
 
-    chatPlaybackRef.current?.stop()
-
-    const playback = playTts(truncateForTts(text), {
-      speed: ttsSpeedRef.current,
-    })
-    chatPlaybackRef.current = playback
-    setSpeakingMessageId(messageId)
-
     try {
-      await playback.finished
+      await audioBus.play(truncateForTts(text), {
+        channel: 'companion',
+        speed: ttsSpeedRef.current,
+        messageId,
+      })
     } catch {
       // 语音失败不影响文字回答
-    } finally {
-      if (chatPlaybackRef.current === playback) {
-        chatPlaybackRef.current = null
-        setSpeakingMessageId(null)
-      }
     }
   }
 
@@ -966,10 +982,27 @@ function App() {
     return () => {
       liveSessionRef.current += 1
       clearBoardAnimWaiter()
-      livePlaybackRef.current?.stop()
+      audioBus.stopAll()
       recognitionRef.current?.abort()
     }
   }, [])
+
+  const keyHandlerRef = useRef({
+    interruptClass: () => {},
+    handleUnderstood: () => {},
+    handleNotUnderstood: () => {},
+  })
+  keyHandlerRef.current = {
+    interruptClass: () => {
+      void interruptClass()
+    },
+    handleUnderstood: () => {
+      handleUnderstood()
+    },
+    handleNotUnderstood: () => {
+      void handleNotUnderstood()
+    },
+  }
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -986,33 +1019,35 @@ function App() {
         return
       }
 
+      const currentState = liveRef.current.liveState
+
       // 空格：举手打断
       if (event.code === 'Space') {
-        if (liveState !== 'playing' && liveState !== 'waiting') return
+        if (currentState !== 'playing' && currentState !== 'waiting') return
         event.preventDefault()
-        void interruptClass()
+        keyHandlerRef.current.interruptClass()
         return
       }
 
-      if (liveState !== 'waiting') return
+      if (currentState !== 'waiting') return
 
       // 回车 / 右方向键：听懂了，下一步
       if (event.code === 'Enter' || event.code === 'ArrowRight') {
         event.preventDefault()
-        handleUnderstood()
+        keyHandlerRef.current.handleUnderstood()
         return
       }
 
       // R 键：没听懂，再讲讲
       if (event.code === 'KeyR') {
         event.preventDefault()
-        void handleNotUnderstood()
+        keyHandlerRef.current.handleNotUnderstood()
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [liveState])
+  }, [])
 
   useEffect(() => {
     if (phase !== 'processing' || taskId === null) return
@@ -1048,7 +1083,6 @@ function App() {
               ? segments
               : buildFallbackStoryboard(data.result ?? ''),
           )
-          setLiveIndex(0)
           setPhase('completed')
           resetLiveSession(0)
           appendMessage('assistant', pickLine(READY_LINES), 'system')
@@ -1080,83 +1114,59 @@ function App() {
   function setLivePosition(index: number, step = -1) {
     liveIndexRef.current = index
     liveStepRef.current = step
-    setLiveIndex(index)
-    setLiveStepIndex(step)
+    dispatchLive({ type: 'SET_POSITION', index, step })
   }
 
   function resetLiveSession(nextIndex = 0) {
     liveSessionRef.current += 1
     clearBoardAnimWaiter()
-    livePlaybackRef.current?.stop()
-    livePlaybackRef.current = null
+    audioBus.stopAll()
     recognitionRef.current?.abort()
     recognitionRef.current = null
-    setLiveState('idle')
-    setLiveError('')
-    setLiveCaption('')
-    setLiveFocus('')
-    setLiveHighlightLines([])
-    setIsPreparing(false)
-    setQuizChoice(null)
-    setQuizVerdict(null)
     remedialRef.current = null
     remedialResumeRef.current = null
     remedialModeRef.current = 'companion'
     quizNextIndexRef.current = null
-    setRemedialMode('companion')
-    setRemedialBoard(null)
-    setRemedialActive(false)
-    setCompanionRaised(false)
-    setCompanionFocus('')
-    setLivePosition(nextIndex, -1)
+    liveIndexRef.current = nextIndex
+    liveStepRef.current = -1
+    dispatchLive({ type: 'RESET_SESSION', nextIndex })
   }
 
   function stopClass() {
     liveSessionRef.current += 1
     clearBoardAnimWaiter()
-    livePlaybackRef.current?.stop()
-    livePlaybackRef.current = null
+    audioBus.stopAll()
     recognitionRef.current?.abort()
     recognitionRef.current = null
-    setIsPreparing(false)
-    setBoardTrigger(null)
     remedialRef.current = null
     remedialResumeRef.current = null
     remedialModeRef.current = 'companion'
     quizNextIndexRef.current = null
-    setRemedialMode('companion')
-    setRemedialBoard(null)
-    setRemedialActive(false)
-    setCompanionRaised(false)
-    setCompanionFocus('')
-    setLiveState('idle')
+    dispatchLive({ type: 'STOP_CLASS' })
   }
 
-  async function speakWithTts(text: string, session: number) {
+  async function speakWithTts(
+    text: string,
+    session: number,
+    messageId?: string | null,
+  ) {
     if (liveSessionRef.current !== session) return
 
     setLiveCaption(text)
-    const playback = playTts(text, { speed: ttsSpeedRef.current })
-    livePlaybackRef.current = playback
-
-    // 音频真正开始播放后，隐藏“正在准备”提示；缓存命中时也至少展示 500ms
-    void playback.started.then(() => {
-      const elapsed = Date.now() - prepareStartedAtRef.current
-      const delay = Math.max(0, 500 - elapsed)
-      window.setTimeout(() => {
-        if (liveSessionRef.current === session) {
-          setIsPreparing(false)
-        }
-      }, delay)
+    await audioBus.play(text, {
+      channel: 'teacher',
+      speed: ttsSpeedRef.current,
+      messageId: messageId ?? null,
+      onStarted: () => {
+        const elapsed = Date.now() - prepareStartedAtRef.current
+        const delay = Math.max(0, 500 - elapsed)
+        window.setTimeout(() => {
+          if (liveSessionRef.current === session) {
+            setIsPreparing(false)
+          }
+        }, delay)
+      },
     })
-
-    try {
-      await playback.finished
-    } finally {
-      if (livePlaybackRef.current === playback) {
-        livePlaybackRef.current = null
-      }
-    }
   }
 
   async function playDynamicSegment(
@@ -1394,6 +1404,7 @@ function App() {
   async function playRemedialSegment(
     segment: RemedialSegment,
     session: number,
+    messageId?: string | null,
   ) {
     if (liveSessionRef.current !== session) return
 
@@ -1405,7 +1416,7 @@ function App() {
     setLiveState('playing')
 
     try {
-      await speakWithTts(segment.speech_intro, session)
+      await speakWithTts(segment.speech_intro, session, messageId)
     } catch (error) {
       if (liveSessionRef.current !== session) return
       setLiveError(
@@ -1425,8 +1436,12 @@ function App() {
     setLiveState('waiting')
   }
 
-  /** 伴读举手：暂停原课堂，请主讲李老师针对薄弱点重新生成一页板书。 */
-  async function startRemedial(question: string, focus: string) {
+  /** 伴读举手：向主讲发送结构化系统指令，暂停原课堂并生成补救板书。 */
+  async function startRemedial(
+    question: string,
+    focus: string,
+    command?: AgentCommand,
+  ) {
     if (!liveStoryboard.length) {
       appendMessage(
         'assistant',
@@ -1436,12 +1451,11 @@ function App() {
       return
     }
 
-    const classWasActive =
-      liveState !== 'idle' && liveState !== 'ended'
+    const currentLive = liveRef.current
+    const classWasActive = isLiveActiveState(currentLive.liveState)
     remedialModeRef.current = 'companion'
-    setRemedialMode('companion')
     quizNextIndexRef.current = null
-    if (!remedialActive && classWasActive) {
+    if (!currentLive.remedialActive && classWasActive) {
       remedialResumeRef.current = {
         index: liveIndexRef.current,
         step: liveStepRef.current,
@@ -1450,23 +1464,19 @@ function App() {
 
     const session = liveSessionRef.current + 1
     liveSessionRef.current = session
-    livePlaybackRef.current?.stop()
-    livePlaybackRef.current = null
-    chatPlaybackRef.current?.stop()
-    chatPlaybackRef.current = null
-    setSpeakingMessageId(null)
+    clearBoardAnimWaiter()
+    audioBus.stopAll()
+    recognitionRef.current?.abort()
+    recognitionRef.current = null
 
-    setCompanionRaised(true)
-    setCompanionFocus(focus)
-    setLiveError('')
-    setQuizChoice(null)
-    setQuizVerdict(null)
-    setBoardTrigger(null)
-    setLiveState('playing')
-    setPrepareLine('李老师收到了伴读的举手，正在针对你的薄弱点重新备课…')
     prepareStartedAtRef.current = Date.now()
-    setIsPreparing(true)
-    setIsEscalating(true)
+    dispatchLive({
+      type: 'START_ESCALATION',
+      mode: 'companion',
+      focus,
+      prepareLine: '李老师收到了伴读的系统指令，正在针对你的薄弱点重新备课…',
+      command,
+    })
 
     try {
       const response = await fetch(`${API_BASE_URL}/api/teacher_remedial`, {
@@ -1507,24 +1517,19 @@ function App() {
       }
 
       remedialRef.current = segment
-      setRemedialBoard(segment)
-      setRemedialActive(true)
-      setRemedialKey((previous) => previous + 1)
+      dispatchLive({ type: 'ENTER_REMEDIAL', segment })
       const teacherMessageId = appendMessage(
         'assistant',
         segment.speech_intro,
         'teacher',
       )
-      setSpeakingMessageId(teacherMessageId)
 
-      await playRemedialSegment(segment, session)
+      await playRemedialSegment(segment, session, teacherMessageId)
     } catch (error) {
       if (liveSessionRef.current !== session) return
 
       const message =
         error instanceof Error ? error.message : '补救讲解生成失败'
-      setCompanionRaised(false)
-      setLiveError(message)
       appendMessage(
         'assistant',
         `李老师这边暂时没能生成补救板书：${message}`,
@@ -1534,14 +1539,20 @@ function App() {
       const point = remedialResumeRef.current
       if (point) {
         resumePointRef.current = { ...point }
-        setLiveState('paused')
+        dispatchLive({
+          type: 'FAIL_ESCALATION',
+          error: message,
+          nextLiveState: 'paused',
+        })
       } else {
-        setLiveState('idle')
+        dispatchLive({
+          type: 'FAIL_ESCALATION',
+          error: message,
+          nextLiveState: 'idle',
+        })
       }
     } finally {
-      setIsEscalating(false)
-      setIsPreparing(false)
-      setSpeakingMessageId(null)
+      dispatchLive({ type: 'END_ESCALATION_LOADING' })
     }
   }
 
@@ -1559,16 +1570,21 @@ function App() {
         ? segmentIndex + 1
         : null
     remedialModeRef.current = 'quiz'
-    setRemedialMode('quiz')
-    setCompanionRaised(true)
-    setCompanionFocus(`错题：${quiz.question.slice(0, 36)}`)
-    setLiveError('')
-    setBoardTrigger(null)
-    setLiveState('playing')
-    setPrepareLine('这道题错了没关系，李老师正在把它拆成更小的步骤…')
     prepareStartedAtRef.current = Date.now()
-    setIsPreparing(true)
-    setIsEscalating(true)
+    dispatchLive({
+      type: 'START_ESCALATION',
+      mode: 'quiz',
+      focus: `错题：${quiz.question.slice(0, 36)}`,
+      prepareLine: '这道题错了没关系，李老师正在把它拆成更小的步骤…',
+      command: {
+        id: `cmd-${Date.now()}`,
+        type: 'QUIZ_REMEDIAL',
+        source: 'quiz',
+        target: 'teacher',
+        focus: quiz.question.slice(0, 60),
+        issuedAt: Date.now(),
+      },
+    })
 
     try {
       const response = await fetch(`${API_BASE_URL}/api/quiz_remedial`, {
@@ -1611,37 +1627,35 @@ function App() {
       }
 
       remedialRef.current = remedial
-      setRemedialBoard(remedial)
-      setRemedialActive(true)
-      setRemedialKey((previous) => previous + 1)
+      dispatchLive({ type: 'ENTER_REMEDIAL', segment: remedial })
       const teacherMessageId = appendMessage(
         'assistant',
         remedial.speech_intro,
         'teacher',
       )
-      setSpeakingMessageId(teacherMessageId)
 
-      await playRemedialSegment(remedial, session)
+      await playRemedialSegment(remedial, session, teacherMessageId)
     } catch (error) {
       if (liveSessionRef.current !== session) return
 
       const message =
         error instanceof Error ? error.message : '错题讲解生成失败'
-      setCompanionRaised(false)
-      setLiveError(message)
       appendMessage(
         'assistant',
         `李老师这边暂时没能拆解这道错题：${message}`,
         'system',
       )
       remedialModeRef.current = 'companion'
-      setRemedialMode('companion')
       quizNextIndexRef.current = null
+      dispatchLive({
+        type: 'FAIL_ESCALATION',
+        error: message,
+        nextLiveState: 'playing',
+        resetMode: true,
+      })
       advanceAfterQuiz(segmentIndex, session)
     } finally {
-      setIsEscalating(false)
-      setIsPreparing(false)
-      setSpeakingMessageId(null)
+      dispatchLive({ type: 'END_ESCALATION_LOADING' })
     }
   }
 
@@ -1654,14 +1668,14 @@ function App() {
     remedialRef.current = null
     remedialModeRef.current = 'companion'
     quizNextIndexRef.current = null
-    setRemedialMode('companion')
-    setRemedialBoard(null)
-    setRemedialActive(false)
-    setCompanionRaised(false)
-    setCompanionFocus('')
-    setBoardTrigger(null)
-    setQuizChoice(null)
-    setQuizVerdict(null)
+    const resumeCmd: AgentCommand = {
+      id: `cmd-${Date.now()}`,
+      type: 'RESUME_FROM_REMEDIAL',
+      source: 'teacher',
+      target: 'companion',
+      focus: liveRef.current.companionFocus,
+      issuedAt: Date.now(),
+    }
 
     if (mode === 'quiz') {
       if (
@@ -1676,17 +1690,29 @@ function App() {
           '这道错题讲完了，我们继续下一段。',
           'system',
         )
-        setLiveState('playing')
+        dispatchLive({
+          type: 'EXIT_REMEDIAL',
+          nextLiveState: 'playing',
+          command: resumeCmd,
+        })
         void playSegmentIntro(quizNext, session)
       } else {
-        setLiveState('ended')
+        dispatchLive({
+          type: 'EXIT_REMEDIAL',
+          nextLiveState: 'ended',
+          command: resumeCmd,
+        })
         appendMessage('assistant', pickLine(FINISHED_LINES), 'system')
       }
       return
     }
 
     if (!point) {
-      setLiveState('idle')
+      dispatchLive({
+        type: 'EXIT_REMEDIAL',
+        nextLiveState: 'idle',
+        command: resumeCmd,
+      })
       appendMessage(
         'assistant',
         '这页补充讲解就先到这儿，需要的话可以继续问我。',
@@ -1702,7 +1728,11 @@ function App() {
       '补充讲解结束，李老师回到刚才的课堂进度。',
       'system',
     )
-    setLiveState('playing')
+    dispatchLive({
+      type: 'EXIT_REMEDIAL',
+      nextLiveState: 'playing',
+      command: resumeCmd,
+    })
     if (point.step >= 0) {
       void playStep(point.index, point.step, session)
     } else {
@@ -1812,7 +1842,7 @@ function App() {
   }
 
   function startClass() {
-    if (isLiveActive) return
+    if (isLiveActiveState(liveRef.current.liveState)) return
     if (!liveStoryboard.length) {
       setLiveError('当前笔记没有可讲解的分镜')
       return
@@ -1820,21 +1850,15 @@ function App() {
 
     const session = liveSessionRef.current + 1
     liveSessionRef.current = session
-    const startIndex = liveState === 'ended' ? 0 : liveIndexRef.current
+    const startIndex =
+      liveRef.current.liveState === 'ended' ? 0 : liveIndexRef.current
 
-    // 开始上课前停掉左侧聊天的语音，避免两个声音叠在一起
-    chatPlaybackRef.current?.stop()
-    chatPlaybackRef.current = null
-    setSpeakingMessageId(null)
+    // 开始上课前经由 AudioBus 清场，杜绝伴读与主讲叠音
+    clearBoardAnimWaiter()
+    audioBus.stopAll()
 
-    setLiveError('')
-    setQuizChoice(null)
-    setQuizVerdict(null)
-    setBoardTrigger(null)
-    setPrepareLine(pickLine(PREPARE_LINES))
     prepareStartedAtRef.current = Date.now()
-    setIsPreparing(true)
-    setLiveState('playing')
+    dispatchLive({ type: 'START_CLASS', prepareLine: pickLine(PREPARE_LINES) })
     void playSegmentIntro(startIndex, session)
   }
 
@@ -1908,6 +1932,8 @@ function App() {
 
     const session = liveSessionRef.current + 1
     liveSessionRef.current = session
+    clearBoardAnimWaiter()
+    audioBus.stopAll()
     setLiveError('')
     setLiveState('quiz-feedback')
     setLiveCaption(pickLine(THINKING_LINES))
@@ -2275,13 +2301,12 @@ function App() {
   }
 
   async function interruptClass() {
-    if (!isLiveActive) return
+    const currentLive = liveRef.current
+    if (!isLiveActiveState(currentLive.liveState)) return
 
-    if (isEscalating) {
-      setCompanionRaised(false)
-      setCompanionFocus('')
+    const wasEscalating = currentLive.isEscalating
+    if (wasEscalating) {
       remedialModeRef.current = 'companion'
-      setRemedialMode('companion')
       quizNextIndexRef.current = null
     }
 
@@ -2291,7 +2316,7 @@ function App() {
     const interruptedStep = liveStepRef.current
     const interruptedSegment = liveStoryboard[interruptedIndex]
     const contextText =
-      remedialActive && remedialRef.current
+      currentLive.remedialActive && remedialRef.current
         ? remedialRef.current.speech_intro
         : interruptedSegment?.html_code
           ? interruptedSegment.speech_intro
@@ -2302,21 +2327,18 @@ function App() {
     resumePointRef.current = {
       index: interruptedIndex,
       step: interruptedStep,
-      remedial: remedialActive,
+      remedial: currentLive.remedialActive,
     }
     interruptContextRef.current = contextText
 
-    // 立刻停止所有正在播放的语音
-    livePlaybackRef.current?.stop()
-    livePlaybackRef.current = null
-    chatPlaybackRef.current?.stop()
-    chatPlaybackRef.current = null
-    setSpeakingMessageId(null)
+    // 经由 AudioBus 立刻停止所有正在播放的语音与板书动画等待器
+    clearBoardAnimWaiter()
+    audioBus.stopAll()
+    recognitionRef.current?.abort()
+    recognitionRef.current = null
 
-    setLiveError('')
-    setShowInterruptInput(false)
     setInterruptInput('')
-    setLiveState('interrupting')
+    dispatchLive({ type: 'BEGIN_INTERRUPT', cancelEscalating: wasEscalating })
 
     try {
       const greeting = await requestTeacherCue('interrupt', contextText)
@@ -2330,8 +2352,10 @@ function App() {
       if (liveSessionRef.current !== session) return
 
       if (!question) {
-        setShowInterruptInput(true)
-        setLiveCaption(pickLine(NO_SPEECH_LINES))
+        dispatchLive({
+          type: 'INTERRUPT_FALLBACK_INPUT',
+          caption: pickLine(NO_SPEECH_LINES),
+        })
         return
       }
 
@@ -2340,9 +2364,11 @@ function App() {
       if (liveSessionRef.current !== session) return
 
       const message = error instanceof Error ? error.message : '打断流程失败'
-      setLiveError(message)
-      setShowInterruptInput(true)
-      setLiveCaption(pickLine(MIC_ERROR_LINES))
+      dispatchLive({
+        type: 'INTERRUPT_FALLBACK_INPUT',
+        caption: pickLine(MIC_ERROR_LINES),
+        error: message,
+      })
     }
   }
 
@@ -2372,29 +2398,22 @@ function App() {
   }
 
   function goToLiveSegment(index: number) {
-    if (isLiveBusy) return
+    if (isLiveBusyState(liveRef.current.liveState)) return
     if (index < 0 || index >= liveStoryboard.length) return
 
-    livePlaybackRef.current?.stop()
-    livePlaybackRef.current = null
     liveSessionRef.current += 1
+    clearBoardAnimWaiter()
+    audioBus.stopAll()
+    recognitionRef.current?.abort()
+    recognitionRef.current = null
 
     remedialRef.current = null
     remedialResumeRef.current = null
     remedialModeRef.current = 'companion'
     quizNextIndexRef.current = null
-    setRemedialMode('companion')
-    setRemedialBoard(null)
-    setRemedialActive(false)
-    setCompanionRaised(false)
-    setCompanionFocus('')
-    setLivePosition(index, -1)
-    setLiveCaption('')
-    setLiveFocus('')
-    setLiveHighlightLines([])
-    setLiveError('')
-    setBoardTrigger(null)
-    setLiveState('idle')
+    liveIndexRef.current = index
+    liveStepRef.current = -1
+    dispatchLive({ type: 'JUMP_SEGMENT', index })
   }
 
   function changeTtsSpeed(speed: number) {
@@ -2442,8 +2461,8 @@ function App() {
       liveState === 'resuming'
     const wasPaused = liveState === 'paused'
 
-    livePlaybackRef.current?.stop()
-    livePlaybackRef.current = null
+    clearBoardAnimWaiter()
+    audioBus.stopAll()
 
     setLiveState('thinking')
     setLiveCaption(pickLine(THINKING_LINES))
@@ -3080,9 +3099,24 @@ function App() {
           return
         }
 
-        appendMessage('assistant', '伴读向老师举手了', 'system')
+        const command: AgentCommand = {
+          id: `cmd-${Date.now()}`,
+          type: 'ESCALATE_REMEDIAL',
+          source: 'companion',
+          target: 'teacher',
+          focus: focus || text.slice(0, 40),
+          reason: (data.reason ?? '').trim(),
+          question: text,
+          issuedAt: Date.now(),
+        }
+        dispatchLive({ type: 'DISPATCH_AGENT_COMMAND', command })
+        appendMessage(
+          'assistant',
+          `[系统指令] 伴读向主讲李老师发送补救指令：针对「${command.focus}」暂停原进度并重讲`,
+          'system',
+        )
         setChatLoading(false)
-        await startRemedial(text, focus)
+        await startRemedial(text, command.focus, command)
         return
       }
 
@@ -3149,7 +3183,9 @@ function App() {
                 ? '讲师回应'
                 : liveState === 'listening'
                   ? '正在聆听'
-                  : liveState === 'thinking'
+                  : liveState === 'awaiting-input'
+                    ? '等待文字提问'
+                    : liveState === 'thinking'
                     ? '正在思考'
                     : liveState === 'resuming'
                       ? '继续讲课'
@@ -3171,7 +3207,7 @@ function App() {
               ? 'bg-amber-200/[0.08] text-amber-100 border-amber-200/15'
               : liveState === 'explaining'
               ? 'bg-white/[0.04] text-slate-400 border-white/10'
-              : liveState === 'listening'
+              : liveState === 'listening' || liveState === 'awaiting-input'
                 ? 'bg-amber-200/[0.08] text-amber-100 border-amber-200/15'
                 : liveState === 'thinking' || liveState === 'interrupting'
                   ? 'bg-white/[0.04] text-slate-400 border-white/10'
@@ -4214,10 +4250,9 @@ function App() {
 
                         <button
                           type="button"
-                          onClick={() => {
-                            setShowInterruptInput(false)
-                            setLiveState('paused')
-                          }}
+                          onClick={() =>
+                            dispatchLive({ type: 'DISMISS_INTERRUPT_INPUT' })
+                          }
                           className="mt-2 text-[11px] text-slate-400 underline decoration-dotted underline-offset-4 transition hover:text-slate-200"
                         >
                           先不问了
